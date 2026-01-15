@@ -13,9 +13,11 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.db.clickhouse import (
     CLICKHOUSE_COLUMNS,
+    all_fact_table,
     ensure_clickhouse_schema,
     fact_table,
     get_clickhouse_client,
+    issue_fact_table,
 )
 from app.db.models import EtlRun, QualityFinding, QualityReport, RoleEnum, Tenant, User
 from app.etl.issues_writer import IssuesWriter
@@ -115,11 +117,10 @@ def _count_parse_failures(
         accumulator.add_parse_fail(column, failures)
 
 
-def _insert_clickhouse(client, df: pl.DataFrame, settings: Settings) -> None:
+def _insert_clickhouse_table(client, df: pl.DataFrame, table: str, settings: Settings) -> None:
     """Insert cleaned rows in batches to keep memory bounded."""
     if df.is_empty():
         return
-    table = fact_table(settings)
     rows = df.select(CLICKHOUSE_COLUMNS).iter_rows()
     batch = []
     for row in rows:
@@ -132,6 +133,12 @@ def _insert_clickhouse(client, df: pl.DataFrame, settings: Settings) -> None:
             batch = []
     if batch:
         client.execute(f"INSERT INTO {table} VALUES", batch)
+
+
+def _insert_clickhouse(client, df: pl.DataFrame, settings: Settings) -> None:
+    """Insert cleaned rows into the CLEAN fact table."""
+    table = fact_table(settings)
+    _insert_clickhouse_table(client, df, table, settings)
 
 
 def _fetch_existing_transaction_ids(
@@ -341,13 +348,18 @@ def run_etl(
     client = get_clickhouse_client(settings)
     ensure_clickhouse_schema(client, settings)
     issues_writer = IssuesWriter(client, settings)
-    table = fact_table(settings)
     if not dry_run:
         logger.info("Clearing existing ClickHouse rows for tenant %s before reload", tenant.id)
-        client.execute(
-            f"ALTER TABLE {table} DELETE WHERE tenant_id = %(tenant_id)s SETTINGS mutations_sync=1",
-            {"tenant_id": tenant.id},
-        )
+        fact_tables = [
+            fact_table(settings),
+            issue_fact_table(settings),
+            all_fact_table(settings),
+        ]
+        for table in fact_tables:
+            client.execute(
+                f"ALTER TABLE {table} DELETE WHERE tenant_id = %(tenant_id)s SETTINGS mutations_sync=1",
+                {"tenant_id": tenant.id},
+            )
 
     quality = QualityAccumulator()
     seen_ids: set[str] = set()
@@ -568,9 +580,19 @@ def run_etl(
                     # Route problematic rows to ISSUES to keep CLEAN analytics trustworthy.
                     issues_writer.write(issue_rows, etl_run_id=run.id)
 
+                issue_df = cleaned.filter(issue_mask) if len(issue_mask) else cleaned.head(0)
+                clean_df = cleaned.filter(~issue_mask) if len(issue_mask) else cleaned
+
                 # Only rows with no issues should land in the CLEAN fact table.
-                cleaned_to_insert = cleaned.filter(~issue_mask) if issue_mask.any() else cleaned
-                _insert_clickhouse(client, cleaned_to_insert, settings)
+                _insert_clickhouse(client, clean_df, settings)
+
+                # ISSUE table stores only rows with issues for analytics.
+                issue_table = issue_fact_table(settings)
+                _insert_clickhouse_table(client, issue_df, issue_table, settings)
+
+                # ALL table stores both clean and issue rows.
+                all_table = all_fact_table(settings)
+                _insert_clickhouse_table(client, cleaned, all_table, settings)
 
             if dry_run:
                 logger.info("Dry-run enabled; stopping after first batch.")

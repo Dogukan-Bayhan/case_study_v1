@@ -106,6 +106,16 @@ def fact_table(settings: Settings) -> str:
     return f"{settings.clickhouse_database}.fact_transactions_clean"
 
 
+def issue_fact_table(settings: Settings) -> str:
+    """Return the fully qualified ISSUE fact table name."""
+    return f"{settings.clickhouse_database}.fact_transactions_issue"
+
+
+def all_fact_table(settings: Settings) -> str:
+    """Return the fully qualified ALL fact table name."""
+    return f"{settings.clickhouse_database}.fact_transactions_all"
+
+
 def raw_table(settings: Settings) -> str:
     """Return the fully qualified RAW table name for audit storage."""
     return f"{settings.clickhouse_database}.fact_transactions_raw"
@@ -114,6 +124,37 @@ def raw_table(settings: Settings) -> str:
 def issues_table(settings: Settings) -> str:
     """Return the fully qualified ISSUES table name for rule violations."""
     return f"{settings.clickhouse_database}.fact_transactions_issues"
+
+
+def _ensure_fact_table(client: Client, settings: Settings, table_name: str) -> None:
+    """Create a fact table with the canonical analytics schema and apply drift fixes."""
+    column_defs = ",\n            ".join(f"{name} {dtype}" for name, dtype in CLICKHOUSE_SCHEMA)
+    client.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {settings.clickhouse_database}.{table_name} (
+            {column_defs}
+        )
+        ENGINE = MergeTree
+        PARTITION BY toYYYYMM(coalesce(event_ts, ingestion_ts))
+        ORDER BY (tenant_id, coalesce(event_ts, ingestion_ts), transaction_id)
+        """
+    )
+
+    existing = client.execute(
+        """
+        SELECT name
+        FROM system.columns
+        WHERE database = %(db)s AND table = %(table)s
+        """,
+        {"db": settings.clickhouse_database, "table": table_name},
+    )
+    existing_cols = {row[0] for row in existing}
+    for name, dtype in CLICKHOUSE_SCHEMA:
+        if name not in existing_cols:
+            client.execute(
+                f"ALTER TABLE {settings.clickhouse_database}.{table_name} "
+                f"ADD COLUMN IF NOT EXISTS {name} {dtype}"
+            )
 
 
 @retry(stop=stop_after_attempt(20), wait=wait_fixed(2))
@@ -127,51 +168,18 @@ def ensure_clickhouse_schema(client: Client, settings: Settings) -> None:
     # analytics-related tables. Using IF NOT EXISTS makes this operation
     # safe to run multiple times.
     client.execute(f"CREATE DATABASE IF NOT EXISTS {settings.clickhouse_database}")
-    table = fact_table(settings)
-    
-    # Generate column definitions from the central schema contract.
-    # This ensures the SQL schema stays in sync with the application code.
-    column_defs = ",\n            ".join(f"{name} {dtype}" for name, dtype in CLICKHOUSE_SCHEMA)
-    client.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table} (
-            {column_defs}
-        )
-        ENGINE = MergeTree
-        PARTITION BY toYYYYMM(coalesce(event_ts, ingestion_ts))
-        ORDER BY (tenant_id, coalesce(event_ts, ingestion_ts), transaction_id)
-        """
-    )
 
     # ------------------------------------------------------------------
-    # 3. Handle schema drift by adding missing columns
+    # 2. Ensure analytics-ready fact tables exist
     # ------------------------------------------------------------------
-    # ClickHouse does not have a migration tool like Alembic.
-    # Instead, we query the system catalog to detect missing columns
-    # and add them automatically. This allows the schema to evolve
-    # safely over time without breaking existing deployments.
-    existing = client.execute(
-        """
-        SELECT name
-        FROM system.columns
-        WHERE database = %(db)s AND table = %(table)s
-        """,
-        {
-            "db": settings.clickhouse_database,
-            "table": "fact_transactions_clean",
-        },
-    )
-
-    existing_cols = {row[0] for row in existing}
-
-    for name, dtype in CLICKHOUSE_SCHEMA:
-        if name not in existing_cols:
-            client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {dtype}")
+    _ensure_fact_table(client, settings, "fact_transactions_clean")
+    _ensure_fact_table(client, settings, "fact_transactions_issue")
+    _ensure_fact_table(client, settings, "fact_transactions_all")
 
     
     
     # ------------------------------------------------------------------
-    # 4. Create the RAW table (exact CSV ingestion, no transformations)
+    # 3. Create the RAW table (exact CSV ingestion, no transformations)
     # ------------------------------------------------------------------
     # This table stores all incoming CSV values as strings, exactly as received.
     # It serves as an immutable audit log and allows reprocessing if ETL rules change.
@@ -192,7 +200,7 @@ def ensure_clickhouse_schema(client: Client, settings: Settings) -> None:
     )
     
     # ------------------------------------------------------------------
-    # 5. Create the ISSUES table (data quality violations)
+    # 4. Create the ISSUES table (data quality violations)
     # ------------------------------------------------------------------
     # This table captures rows that fail validation or quality checks.
     # Each row may contain multiple issues with different severities,
