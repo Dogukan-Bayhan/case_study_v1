@@ -11,8 +11,26 @@ def fetch_column_types(
     table: str,
     columns: Iterable[str],
 ) -> list[tuple[str, str]]:
-    """Return column types for the requested columns, preserving order."""
+    """Return column types for requested columns, preserving order.
+
+    Business purpose:
+        Validate ClickHouse schema for QA checks.
+    Why it exists:
+        QA tests need column types to build type-aware checks.
+    Where used:
+        QA test suites that inspect ClickHouse schemas.
+    Inputs:
+        client: ClickHouse client for metadata queries.
+        database: ClickHouse database name.
+        table: ClickHouse table name.
+        columns: Column names to inspect.
+    Returns:
+        List of (name, type) tuples in requested order.
+    """
     requested = list(columns)
+    # Query system.columns to retrieve column types for the table.
+    # Metadata lookup avoids scanning data parts and is fast.
+    # IN clause keeps the result set limited to requested columns.
     rows = client.execute(
         """
         SELECT name, type
@@ -26,7 +44,20 @@ def fetch_column_types(
 
 
 def _missing_expr(column: str, dtype: str) -> str:
-    """Build a type-aware missing-count expression for ClickHouse."""
+    """Build a type-aware missing-count expression for ClickHouse.
+
+    Business purpose:
+        Generate SQL expressions that count missing values correctly.
+    Why it exists:
+        String columns treat empty strings as missing; numeric columns do not.
+    Where used:
+        fetch_missing_ratios when assembling aggregate queries.
+    Inputs:
+        column: Column name to evaluate.
+        dtype: ClickHouse type string.
+    Returns:
+        SQL expression string for counting missing values.
+    """
     if "String" in dtype:
         return f"countIf({column} IS NULL OR {column} = '') AS {column}_missing"
     return f"countIf({column} IS NULL) AS {column}_missing"
@@ -37,7 +68,21 @@ def fetch_missing_ratios(
     table: str,
     column_types: list[tuple[str, str]],
 ) -> tuple[int, dict[str, dict[str, float]]]:
-    """Return total rows plus missing counts/ratios for each column."""
+    """Return total rows plus missing counts/ratios for each column.
+
+    Business purpose:
+        Compute missingness ratios for QA validation of ClickHouse data.
+    Why it exists:
+        QA checks need consistent missing metrics across columns.
+    Where used:
+        QA tests for ETL output correctness.
+    Inputs:
+        client: ClickHouse client for query execution.
+        table: ClickHouse table name.
+        column_types: List of (column, type) tuples.
+    Returns:
+        Tuple of total row count and dict of missing metrics per column.
+    """
     expressions = []
     columns = []
     for name, dtype in column_types:
@@ -46,6 +91,9 @@ def fetch_missing_ratios(
         expressions.append(_missing_expr(name, dtype))
         columns.append(name)
 
+    # Query computes total rows and missing counts per column in one scan.
+    # Single aggregate query avoids per-column scans in QA checks.
+    # COUNT + countIf expressions keep the output size small.
     query = f"SELECT count() AS total, {', '.join(expressions)} FROM {table}"
     row = client.execute(query)[0]
     total = int(row[0])

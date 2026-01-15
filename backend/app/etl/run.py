@@ -9,7 +9,19 @@ from app.etl.service import run_etl
 
 
 def main() -> None:
-    """CLI wrapper to launch ETL outside the API runtime."""
+    """Run the ETL pipeline from the command line.
+
+    Business purpose:
+        Provide a CLI entrypoint for manual or scheduled ETL runs.
+    Why it exists:
+        Allows running ETL without the web API server.
+    Where used:
+        CLI scripts and container entrypoints.
+    Inputs:
+        None; uses CLI arguments for tenant, CSV path, and dry-run.
+    Returns:
+        None; exits on completion or error.
+    """
     parser = argparse.ArgumentParser(description="Run ETL for a tenant")
     parser.add_argument("--tenant", required=True, help="Tenant slug")
     parser.add_argument("--csv", required=True, help="CSV path in container")
@@ -25,9 +37,11 @@ def main() -> None:
     SessionLocal = get_session_maker(engine)
 
     with SessionLocal() as db:
+        # Resolve tenant by slug to scope the ETL run.
         tenant = db.query(Tenant).filter(Tenant.slug == args.tenant).first()
         if tenant is None:
             raise SystemExit("Tenant not found")
+        # Execute ETL for the resolved tenant and CSV path.
         run_etl(db, settings, tenant, args.csv, None, dry_run=args.dry_run)
 
 

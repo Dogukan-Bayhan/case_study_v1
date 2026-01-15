@@ -1,7 +1,19 @@
 """Canonical schema mapping for e-commerce data."""
 
 def normalize_column(name: str) -> str:
-    """Normalize incoming column names so mapping is deterministic."""
+    """Normalize raw column names into a canonical key.
+
+    Business purpose:
+        Standardize CSV headers so mapping is deterministic.
+    Why it exists:
+        Source files may use inconsistent casing or separators.
+    Where used:
+        Column mapping during ETL ingestion.
+    Inputs:
+        name: Raw column header from a CSV file.
+    Returns:
+        Normalized lowercase header with underscores.
+    """
     return (
         name.strip()
         .lower()
@@ -106,9 +118,23 @@ CANONICAL_MAP = {
 
 
 def detect_mapping(columns: list[str]) -> dict[str, str]:
-    """Infer canonical column mapping from a list of CSV headers."""
+    """Infer canonical column mapping from a list of CSV headers.
+
+    Business purpose:
+        Map incoming CSV headers to canonical analytics fields.
+    Why it exists:
+        Supports multiple header variants in different datasets.
+    Where used:
+        ETL ingestion when explicit mapping is not provided.
+    Inputs:
+        columns: Raw CSV header list.
+    Returns:
+        Dict mapping canonical field names to raw CSV headers.
+    """
+    # Normalize incoming headers for alias comparison.
     normalized = {normalize_column(col): col for col in columns}
     mapping: dict[str, str] = {}
+    # Match the first alias found for each canonical field.
     for canonical, aliases in CANONICAL_MAP.items():
         for alias in aliases:
             if alias in normalized:
@@ -118,11 +144,25 @@ def detect_mapping(columns: list[str]) -> dict[str, str]:
 
 
 def build_explicit_mapping(columns: list[str]) -> tuple[dict[str, str], list[str]]:
-    """Build a canonical->raw mapping based on explicit CSV headers."""
+    """Build a canonical-to-raw mapping based on explicit CSV headers.
+
+    Business purpose:
+        Enforce a strict mapping from dataset headers to canonical fields.
+    Why it exists:
+        Avoids ambiguous mappings when explicit headers are known.
+    Where used:
+        ETL ingestion for the curated dataset.
+    Inputs:
+        columns: Raw CSV header list.
+    Returns:
+        Tuple of (canonical mapping dict, unknown column list).
+    """
+    # Normalize incoming headers and mapping keys for comparison.
     normalized_csv = {normalize_column(col): col for col in columns}
     normalized_map = {normalize_column(raw): canonical for raw, canonical in CSV_TO_CANONICAL.items()}
     mapping: dict[str, str] = {}
     unknown: list[str] = []
+    # Build the mapping and capture unknown headers for diagnostics.
     for normalized, raw in normalized_csv.items():
         if normalized in normalized_map:
             mapping[normalized_map[normalized]] = raw

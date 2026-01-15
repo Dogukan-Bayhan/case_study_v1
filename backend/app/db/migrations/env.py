@@ -23,9 +23,22 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in offline mode without a live DB connection."""
+    """Run Alembic migrations in offline mode.
+
+    Business purpose:
+        Generate migration SQL without connecting to a database.
+    Why it exists:
+        Supports environments where a live DB connection is unavailable.
+    Where used:
+        Alembic CLI offline migration commands.
+    Inputs:
+        None; uses configured database_url from settings.
+    Returns:
+        None; executes migration scripts in offline mode.
+    """
     settings = get_settings()
     url = settings.database_url
+    # Configure Alembic with a URL-only context for offline SQL generation.
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -38,10 +51,23 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations against a live database connection."""
+    """Run Alembic migrations against a live database connection.
+
+    Business purpose:
+        Apply schema changes directly to the configured database.
+    Why it exists:
+        Ensures migrations run with the application metadata context.
+    Where used:
+        Alembic CLI online migration commands.
+    Inputs:
+        None; uses configured database_url from settings.
+    Returns:
+        None; executes migration scripts against the live DB.
+    """
     settings = get_settings()
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = settings.database_url
+    # Build a SQLAlchemy engine with Alembic's configuration.
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
@@ -49,6 +75,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # Bind the connection and metadata to Alembic context.
         context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():

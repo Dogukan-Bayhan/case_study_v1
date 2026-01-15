@@ -4,7 +4,19 @@ from pydantic import BaseModel, ConfigDict
 
 
 def _to_camel(value: str) -> str:
-    """Translate snake_case fields to camelCase for frontend ergonomics."""
+    """Convert snake_case field names to camelCase aliases.
+
+    Business purpose:
+        Align API response field names with frontend conventions.
+    Why it exists:
+        Keeps serialization consistent without manual alias definitions.
+    Where used:
+        Configured via CamelModel alias_generator.
+    Inputs:
+        value: Snake_case field name.
+    Returns:
+        CamelCase version suitable for JSON responses.
+    """
     parts = value.split("_")
     return parts[0] + "".join(word.capitalize() for word in parts[1:])
 

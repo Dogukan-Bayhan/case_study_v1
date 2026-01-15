@@ -42,13 +42,23 @@ MAX_NULL_RATIO = float(os.getenv("QA_REQUIRED_MAX_NULL_RATIO", "0.95"))
 
 
 def test_etl_required_columns_present_in_clickhouse(clickhouse_client, clickhouse_database):
-    """
-    Validate that all required transaction columns exist in ClickHouse after ETL.
+    """Validate required transaction columns exist in ClickHouse after ETL.
 
-    Why: ETL schema drift can silently drop columns, breaking downstream analytics and APIs.
-    Failure caught: missing or renamed columns in `fact_transactions_clean`.
-    Expected: every column listed in REQUIRED_TRANSACTION_COLUMNS exists in the ClickHouse table.
+    Business purpose:
+        Ensure ETL output schema matches expected analytics requirements.
+    Why it exists:
+        Detects schema drift that could break downstream APIs.
+    Where used:
+        QA test suite for ETL output correctness.
+    Inputs:
+        clickhouse_client: ClickHouse client for metadata queries.
+        clickhouse_database: ClickHouse database name.
+    Returns:
+        None; asserts required columns exist.
     """
+    # Query system.columns to validate the clean fact table schema.
+    # Metadata-only query avoids scanning table data.
+    # Ensures schema drift is caught quickly in QA.
     rows = clickhouse_client.execute(
         """
         SELECT name
@@ -63,12 +73,20 @@ def test_etl_required_columns_present_in_clickhouse(clickhouse_client, clickhous
 
 
 def test_etl_required_columns_not_null_heavy(clickhouse_client, clickhouse_fact_table, clickhouse_database):
-    """
-    Ensure required columns are populated and not effectively NULL after transformation.
+    """Ensure required columns are not null-heavy after transformation.
 
-    Why: A successful ETL run can still be incorrect if required fields are mostly empty.
-    Failure caught: mapping errors or upstream data issues that leave required fields null-heavy.
-    Expected: each required column has a null/blank ratio below the QA_REQUIRED_MAX_NULL_RATIO threshold.
+    Business purpose:
+        Validate ETL output has sufficient data completeness.
+    Why it exists:
+        Prevents silently broken mappings that leave required columns empty.
+    Where used:
+        QA test suite for ETL output correctness.
+    Inputs:
+        clickhouse_client: ClickHouse client for validation queries.
+        clickhouse_fact_table: Clean fact table name.
+        clickhouse_database: ClickHouse database name.
+    Returns:
+        None; asserts null ratios are below threshold.
     """
     column_types = fetch_column_types(
         clickhouse_client,

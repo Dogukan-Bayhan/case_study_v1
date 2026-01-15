@@ -6,9 +6,22 @@ from app.etl.quality import QualityAccumulator
 
 
 def test_missing_ratio():
-    """Verify missing/blank tracking aligns with expected counts."""
+    """Verify missing/blank tracking aligns with expected counts.
+
+    Business purpose:
+        Validate quality accumulator missingness calculations.
+    Why it exists:
+        Prevent regressions in missing/blank ratio reporting.
+    Where used:
+        Test suite for ETL quality logic.
+    Inputs:
+        None; constructs an in-memory DataFrame.
+    Returns:
+        None; asserts expected summary values.
+    """
     df = pl.DataFrame({"a": [1, None, 3], "b": ["", "x", None]})
     quality = QualityAccumulator()
+    # Accumulate missing and blank counts to compare against expectations.
     quality.add_rows(df.height)
     for col in df.columns:
         series = df[col]

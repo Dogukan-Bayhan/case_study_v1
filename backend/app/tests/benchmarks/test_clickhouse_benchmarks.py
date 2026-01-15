@@ -15,7 +15,22 @@ PAGE_SIZE = int(os.getenv("BENCHMARK_PAGE_SIZE", "100"))
 
 
 def _run_benchmark(client, label: str, query: str, params: dict | None = None) -> list:
-    """Run a benchmark query multiple times and record warm/cold metrics."""
+    """Run a benchmark query multiple times and record warm/cold metrics.
+
+    Business purpose:
+        Measure latency for a query across cold and warm runs.
+    Why it exists:
+        Benchmarks need repeated runs to detect performance regressions.
+    Where used:
+        ClickHouse benchmark tests in this module.
+    Inputs:
+        client: ClickHouse client for query execution.
+        label: Benchmark label for reporting.
+        query: SQL query string to execute.
+        params: Optional parameter dict for the query.
+    Returns:
+        List of QueryMetrics objects from each run.
+    """
     runs = []
     for idx in range(BENCH_ITERATIONS):
         metrics, _ = run_query_with_metrics(client, query, params)
@@ -30,7 +45,23 @@ def _run_benchmark(client, label: str, query: str, params: dict | None = None) -
 
 
 def _select_primary_tenant(client, table: str) -> tuple[int, int]:
-    """Pick the busiest tenant to produce stable benchmark results."""
+    """Pick the busiest tenant to produce stable benchmark results.
+
+    Business purpose:
+        Benchmark against the tenant with the most data.
+    Why it exists:
+        Ensures benchmarks reflect realistic load.
+    Where used:
+        ClickHouse benchmark tests.
+    Inputs:
+        client: ClickHouse client for query execution.
+        table: Fully qualified fact table name.
+    Returns:
+        Tuple of (tenant_id, total_rows) for the busiest tenant.
+    """
+    # Query finds the tenant with the most rows for stable benchmarks.
+    # GROUP BY + ORDER BY returns the busiest tenant with a single scan.
+    # LIMIT 1 keeps the result set minimal for performance.
     rows = client.execute(
         f"""
         SELECT tenant_id, count() AS total
@@ -47,7 +78,24 @@ def _select_primary_tenant(client, table: str) -> tuple[int, int]:
 
 
 def _tenant_date_range(client, table: str, tenant_id: int):
-    """Return min/max order_date for a tenant or None if missing."""
+    """Return min/max order_date for a tenant or None if missing.
+
+    Business purpose:
+        Provide a date range for date-filtered benchmarks.
+    Why it exists:
+        Benchmarks should use realistic date ranges from actual data.
+    Where used:
+        Filtered date benchmark test.
+    Inputs:
+        client: ClickHouse client for query execution.
+        table: Fully qualified fact table name.
+        tenant_id: Tenant identifier for isolation.
+    Returns:
+        Tuple of (start, end) datetimes or None if unavailable.
+    """
+    # Query computes min/max order_date for the tenant.
+    # Aggregates keep the result small and avoid row-level reads.
+    # Tenant filter scopes the scan to relevant partitions.
     rows = client.execute(
         f"""
         SELECT min(order_date), max(order_date)
@@ -65,30 +113,46 @@ def _tenant_date_range(client, table: str, tenant_id: int):
 
 
 def test_benchmark_clickhouse_count_all(clickhouse_client, clickhouse_fact_table):
-    """
-    Benchmark COUNT(*) query execution time and resource usage.
+    """Benchmark COUNT(*) query execution time and resource usage.
 
-    Why: COUNT(*) is common for pagination totals and monitoring; it stresses scan performance.
-    Expected: query completes successfully with stable warm-run timings.
-    Failure indicates: table access or ClickHouse performance regressions.
+    Business purpose:
+        Measure table scan performance for pagination totals.
+    Why it exists:
+        COUNT(*) is a common workload and a regression signal.
+    Where used:
+        ClickHouse performance benchmarks.
+    Inputs:
+        clickhouse_client: Live ClickHouse client fixture.
+        clickhouse_fact_table: Fully qualified fact table name.
+    Returns:
+        None; asserts benchmark runs executed.
     """
+    # Query scans the full table to measure baseline throughput.
     query = f"SELECT count() FROM {clickhouse_fact_table}"
     runs = _run_benchmark(clickhouse_client, "clickhouse_count_all", query)
     assert runs, "COUNT(*) benchmark did not execute."
 
 
 def test_benchmark_clickhouse_pagination_query(clickhouse_client, clickhouse_fact_table):
-    """
-    Benchmark a tenant-scoped pagination query (LIMIT + OFFSET).
+    """Benchmark a tenant-scoped pagination query (LIMIT + OFFSET).
 
-    Why: Pagination drives the Transactions UI and must stay responsive on large datasets.
-    Expected: query completes successfully and returns PAGE_SIZE rows on warm runs.
-    Failure indicates: degraded ClickHouse query latency or pagination instability.
+    Business purpose:
+        Measure transaction pagination query latency.
+    Why it exists:
+        Pagination drives the Transactions UI and must stay responsive.
+    Where used:
+        ClickHouse performance benchmarks.
+    Inputs:
+        clickhouse_client: Live ClickHouse client fixture.
+        clickhouse_fact_table: Fully qualified fact table name.
+    Returns:
+        None; asserts benchmark results are non-empty.
     """
     tenant_id, total_rows = _select_primary_tenant(clickhouse_client, clickhouse_fact_table)
     if total_rows <= PAGE_SIZE:
         pytest.skip("Not enough rows to benchmark pagination with OFFSET.")
     offset = min(total_rows - PAGE_SIZE, max(PAGE_SIZE, total_rows // 2))
+    # Query reads a page of rows ordered by date to emulate UI pagination.
     query = f"""
         SELECT transaction_id, order_date, total_amount
         FROM {clickhouse_fact_table}
@@ -102,14 +166,22 @@ def test_benchmark_clickhouse_pagination_query(clickhouse_client, clickhouse_fac
 
 
 def test_benchmark_clickhouse_aggregation_query(clickhouse_client, clickhouse_fact_table):
-    """
-    Benchmark aggregation performance (SUM + GROUP BY).
+    """Benchmark aggregation performance (SUM + GROUP BY).
 
-    Why: KPI and top-product queries depend on aggregation speed in ClickHouse.
-    Expected: query completes successfully with stable warm-run timings.
-    Failure indicates: aggregation or grouping performance regression.
+    Business purpose:
+        Measure aggregation speed used by KPI and breakdown queries.
+    Why it exists:
+        Aggregations are core to analytics and sensitive to regressions.
+    Where used:
+        ClickHouse performance benchmarks.
+    Inputs:
+        clickhouse_client: Live ClickHouse client fixture.
+        clickhouse_fact_table: Fully qualified fact table name.
+    Returns:
+        None; asserts benchmark runs executed.
     """
     tenant_id, _ = _select_primary_tenant(clickhouse_client, clickhouse_fact_table)
+    # Query aggregates revenue by department to exercise GROUP BY performance.
     query = f"""
         SELECT department, sum(amount) AS revenue
         FROM {clickhouse_fact_table}
@@ -124,12 +196,19 @@ def test_benchmark_clickhouse_aggregation_query(clickhouse_client, clickhouse_fa
 
 
 def test_benchmark_clickhouse_filtered_date_query(clickhouse_client, clickhouse_fact_table):
-    """
-    Benchmark a filtered query (tenant + date range).
+    """Benchmark a filtered query (tenant + date range).
 
-    Why: time-based filtering is typical for analytics dashboards.
-    Expected: query completes successfully with stable warm-run timings.
-    Failure indicates: regression in predicate filtering or date parsing.
+    Business purpose:
+        Measure performance for date-filtered analytics queries.
+    Why it exists:
+        Time-based filtering is typical for dashboards and KPI queries.
+    Where used:
+        ClickHouse performance benchmarks.
+    Inputs:
+        clickhouse_client: Live ClickHouse client fixture.
+        clickhouse_fact_table: Fully qualified fact table name.
+    Returns:
+        None; asserts benchmark runs executed.
     """
     tenant_id, _ = _select_primary_tenant(clickhouse_client, clickhouse_fact_table)
     date_range = _tenant_date_range(clickhouse_client, clickhouse_fact_table, tenant_id)
@@ -140,6 +219,7 @@ def test_benchmark_clickhouse_filtered_date_query(clickhouse_client, clickhouse_
     window_start = midpoint - timedelta(days=7)
     window_end = midpoint + timedelta(days=7)
 
+    # Query counts rows and sums revenue over a bounded date range.
     query = f"""
         SELECT count(), sum(amount) AS revenue
         FROM {clickhouse_fact_table}

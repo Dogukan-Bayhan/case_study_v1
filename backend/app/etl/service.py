@@ -33,17 +33,54 @@ TRANSFORM_COLUMNS = REQUIRED_TRANSACTION_COLUMNS + DERIVED_COLUMNS
 
 
 def _clean_str(series: pl.Series) -> pl.Series:
-    """Trim and coerce string columns to keep downstream comparisons stable."""
+    """Trim and coerce string columns to keep comparisons stable.
+
+    Business purpose:
+        Normalize string fields before validation and grouping.
+    Why it exists:
+        Raw CSV values may include inconsistent casing or whitespace.
+    Where used:
+        ETL transformation step for text columns.
+    Inputs:
+        series: Polars Series containing raw string values.
+    Returns:
+        Cleaned Polars Series with trimmed string values.
+    """
     return series.cast(pl.Utf8, strict=False).str.strip_chars()
 
 
 def _normalize_columns(df: pl.DataFrame) -> pl.DataFrame:
-    """Normalize header whitespace without changing source values."""
+    """Normalize column header whitespace without changing values.
+
+    Business purpose:
+        Ensure column names are stable for mapping and selection.
+    Why it exists:
+        CSV headers may include leading/trailing whitespace.
+    Where used:
+        ETL ingestion before explicit mapping.
+    Inputs:
+        df: Incoming Polars DataFrame.
+    Returns:
+        DataFrame with stripped column names.
+    """
     return df.rename({col: col.strip() for col in df.columns})
 
 
 def _ensure_columns(df: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
-    """Guarantee expected columns exist so later transforms are predictable."""
+    """Ensure expected columns exist so transforms are predictable.
+
+    Business purpose:
+        Guarantee downstream transformations can rely on a fixed schema.
+    Why it exists:
+        Missing optional columns should not crash the pipeline.
+    Where used:
+        ETL transform stage after column mapping.
+    Inputs:
+        df: Polars DataFrame to adjust.
+        columns: Required column names to ensure.
+    Returns:
+        DataFrame with any missing columns added as nulls.
+    """
     for col in columns:
         if col not in df.columns:
             df = df.with_columns(pl.lit(None).alias(col))
@@ -51,17 +88,44 @@ def _ensure_columns(df: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
 
 
 def _hash_value(value: str) -> int:
-    """Stable hash used to distribute ownership across users."""
+    """Compute a stable hash for deterministic owner assignment.
+
+    Business purpose:
+        Distribute row ownership across users deterministically.
+    Why it exists:
+        Keeps owner_user_id stable across repeated ETL runs.
+    Where used:
+        _pick_owner when assigning owners based on customer identifiers.
+    Inputs:
+        value: String value used as the hash input.
+    Returns:
+        Integer hash derived from SHA-256 digest.
+    """
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
     return int(digest[:8], 16)
 
 
 def _pick_owner(user_ids: list[int], value: str | None, default_owner: int) -> int:
-    """Assign a deterministic owner for multi-tenant row-level scoping."""
+    """Assign a deterministic owner for row-level scoping.
+
+    Business purpose:
+        Support per-user scoping for NORMAL users in analytics.
+    Why it exists:
+        Ensures ownership assignment is stable and reproducible.
+    Where used:
+        ETL transformation when setting owner_user_id.
+    Inputs:
+        user_ids: List of eligible user ids.
+        value: Value used to hash into an owner choice.
+        default_owner: Fallback owner when no users exist.
+    Returns:
+        Selected owner user id.
+    """
     if not user_ids:
         return default_owner
     if value is None:
         return user_ids[0]
+    # Hash to distribute ownership across available users.
     hashed = _hash_value(value)
     return user_ids[hashed % len(user_ids)]
 
@@ -71,7 +135,21 @@ def _count_missing(
     accumulator: QualityAccumulator,
     columns: list[str] | None = None,
 ) -> None:
-    """Record missing/blank counts for each column in the batch."""
+    """Record missing and blank counts for each column in the batch.
+
+    Business purpose:
+        Track missingness rates for quality reporting.
+    Why it exists:
+        Missing values can invalidate analytics and need visibility.
+    Where used:
+        ETL transformation pipeline.
+    Inputs:
+        df: Polars DataFrame for the current batch.
+        accumulator: QualityAccumulator to update.
+        columns: Optional list of columns to evaluate.
+    Returns:
+        None; updates accumulator counters.
+    """
     for col in (columns or df.columns):
         series = df[col]
         null_count = int(series.is_null().sum())
@@ -82,7 +160,19 @@ def _count_missing(
 
 
 def validate_transformed_dataframe(df: pl.DataFrame) -> dict[str, float]:
-    """Validate transformed data and return null ratios for required columns."""
+    """Validate transformed data and return null ratios for required columns.
+
+    Business purpose:
+        Ensure transformed data meets minimum schema requirements.
+    Why it exists:
+        Prevents incomplete datasets from being loaded into analytics tables.
+    Where used:
+        ETL pipeline after transformations and before inserts.
+    Inputs:
+        df: Transformed Polars DataFrame.
+    Returns:
+        Dict mapping required column names to null ratios.
+    """
     missing = [col for col in REQUIRED_TRANSACTION_COLUMNS if col not in df.columns]
     if missing:
         raise ValueError(f"Transformed data missing required columns: {', '.join(missing)}")
@@ -93,6 +183,7 @@ def validate_transformed_dataframe(df: pl.DataFrame) -> dict[str, float]:
         missing_count = int(series.is_null().sum())
         if series.dtype == pl.Utf8:
             missing_count += int(series.str.strip_chars().eq("").sum())
+        # Ratio uses dataframe height to normalize missingness.
         ratio = (missing_count / df.height) if df.height else 0
         ratios[col] = ratio
     return ratios
@@ -104,7 +195,22 @@ def _count_parse_failures(
     column: str,
     accumulator: QualityAccumulator,
 ) -> None:
-    """Track parsing failures without rejecting the row."""
+    """Track parsing failures without rejecting the row.
+
+    Business purpose:
+        Capture parsing issues for quality reporting without failing ingestion.
+    Why it exists:
+        Parsing errors are common in CSV data and should be visible.
+    Where used:
+        ETL transformation when casting columns to numeric/datetime.
+    Inputs:
+        raw: Raw Polars Series before parsing.
+        parsed: Parsed Polars Series after casting.
+        column: Column name used for reporting.
+        accumulator: QualityAccumulator to update.
+    Returns:
+        None; updates accumulator counters.
+    """
     raw_stripped = raw.cast(pl.Utf8, strict=False).str.strip_chars()
     failures = int(
         (
@@ -118,25 +224,63 @@ def _count_parse_failures(
 
 
 def _insert_clickhouse_table(client, df: pl.DataFrame, table: str, settings: Settings) -> None:
-    """Insert cleaned rows in batches to keep memory bounded."""
+    """Insert cleaned rows into a ClickHouse table in batches.
+
+    Business purpose:
+        Persist transformed rows while keeping memory usage bounded.
+    Why it exists:
+        Large datasets require batching to avoid large payloads.
+    Where used:
+        ETL pipeline when inserting into clean, issue, and all tables.
+    Inputs:
+        client: ClickHouse client for inserts.
+        df: Polars DataFrame with cleaned columns.
+        table: Target ClickHouse table name.
+        settings: Runtime configuration containing batch size.
+    Returns:
+        None; performs batched inserts.
+    """
     if df.is_empty():
         return
+    # Select only canonical columns to avoid schema drift.
     rows = df.select(CLICKHOUSE_COLUMNS).iter_rows()
     batch = []
     for row in rows:
         batch.append(row)
         if len(batch) >= settings.etl_insert_batch_size:
+            # Batch insert to reduce ClickHouse insert overhead.
+            # Insert cleaned rows in bulk to keep ingestion throughput high.
+            # Bulk inserts reduce round-trips and amortize per-row costs.
+            # Column order matches CLICKHOUSE_COLUMNS for deterministic inserts.
             client.execute(
                 f"INSERT INTO {table} VALUES",
                 batch,
             )
             batch = []
     if batch:
+        # Flush any remaining rows in the final batch.
+        # Final bulk insert ensures remaining rows are persisted.
+        # Bulk insert keeps per-row overhead low for tail batches.
+        # Uses the same canonical column order as earlier batches.
         client.execute(f"INSERT INTO {table} VALUES", batch)
 
 
 def _insert_clickhouse(client, df: pl.DataFrame, settings: Settings) -> None:
-    """Insert cleaned rows into the CLEAN fact table."""
+    """Insert cleaned rows into the CLEAN fact table.
+
+    Business purpose:
+        Persist validated records for primary analytics queries.
+    Why it exists:
+        Encapsulates clean table selection and insertion.
+    Where used:
+        ETL pipeline after validation.
+    Inputs:
+        client: ClickHouse client for inserts.
+        df: Polars DataFrame of clean rows.
+        settings: Runtime configuration for table names and batch size.
+    Returns:
+        None; inserts rows into the clean fact table.
+    """
     table = fact_table(settings)
     _insert_clickhouse_table(client, df, table, settings)
 
@@ -147,7 +291,22 @@ def _fetch_existing_transaction_ids(
     tenant_id: int,
     transaction_ids: set[str],
 ) -> set[str]:
-    """Resolve duplicates against existing CLEAN rows without huge queries."""
+    """Resolve duplicate transaction IDs against existing clean facts.
+
+    Business purpose:
+        Prevent duplicate transaction IDs from being re-ingested.
+    Why it exists:
+        Deduplication must consider both current batch and stored data.
+    Where used:
+        ETL validation when building issue masks.
+    Inputs:
+        client: ClickHouse client for queries.
+        settings: Runtime configuration for table names.
+        tenant_id: Tenant identifier for isolation.
+        transaction_ids: Set of transaction IDs from the current batch.
+    Returns:
+        Set of transaction IDs that already exist in the clean table.
+    """
     if not transaction_ids:
         return set()
     table = fact_table(settings)
@@ -156,6 +315,10 @@ def _fetch_existing_transaction_ids(
     chunk_size = 5000
     for offset in range(0, len(ids_list), chunk_size):
         chunk = ids_list[offset : offset + chunk_size]
+        # Query existing transaction_ids in chunks to avoid oversized IN lists.
+        # Query checks for historical duplicates scoped to the tenant.
+        # Chunked IN lists keep query planning and payload sizes reasonable.
+        # Tenant filter aligns with partition/order keys for pruning.
         rows = client.execute(
             f"""
             SELECT transaction_id
@@ -175,10 +338,27 @@ def _evaluate_issue_rows(
     settings: Settings,
     tenant_id: int,
 ) -> tuple[pl.Series, list[dict[str, object]]]:
-    """Evaluate rule masks for a batch and prepare issue payloads."""
+    """Evaluate quality rules for a batch and prepare issue payloads.
+
+    Business purpose:
+        Identify rows that should be routed to the ISSUE fact table.
+    Why it exists:
+        Encapsulates rule evaluation logic and issue row construction.
+    Where used:
+        ETL pipeline when splitting clean vs issue rows.
+    Inputs:
+        df: Transformed DataFrame for rule evaluation.
+        raw_df: Raw DataFrame used to capture original values.
+        client: ClickHouse client for duplicate checks.
+        settings: Runtime configuration for table names.
+        tenant_id: Tenant identifier for isolation.
+    Returns:
+        Tuple of (issue mask series, list of issue row dicts).
+    """
     if df.is_empty():
         return pl.Series([], dtype=pl.Boolean), []
 
+    # Normalize transaction IDs and compute duplicates within the batch.
     transaction_ids = (
         df["transaction_id"]
         .cast(pl.Utf8, strict=False)
@@ -188,6 +368,7 @@ def _evaluate_issue_rows(
     )
     non_blank_ids = [tid for tid in transaction_ids if tid]
     duplicate_ids = {tid for tid, count in Counter(non_blank_ids).items() if count > 1}
+    # Fetch IDs already present in ClickHouse to catch historical duplicates.
     existing_ids = _fetch_existing_transaction_ids(
         client,
         settings,
@@ -195,6 +376,7 @@ def _evaluate_issue_rows(
         set(non_blank_ids),
     )
 
+    # Build missing field mask based on required fields.
     missing_exprs = [
         pl.col(field)
         .cast(pl.Utf8, strict=False)
@@ -205,20 +387,24 @@ def _evaluate_issue_rows(
     ]
     missing_mask = df.select(pl.any_horizontal(missing_exprs)).to_series().to_list()
 
+    # Build price mismatch mask using derived totals.
     quantity = pl.col("quantity").cast(pl.Float64, strict=False)
     unit_price = pl.col("unit_price").cast(pl.Float64, strict=False)
     total_amount = pl.col("total_amount").cast(pl.Float64, strict=False)
     discount_percent = pl.col("discount_percent").cast(pl.Float64, strict=False).fill_null(0)
     tax_rate = pl.col("tax_rate").cast(pl.Float64, strict=False).fill_null(0)
     valid_price = quantity.is_not_null() & unit_price.is_not_null() & total_amount.is_not_null()
+    # Expected total includes discount and tax adjustments.
     expected_total = (quantity * unit_price) * (1 - discount_percent / 100) * (1 + tax_rate / 100)
     expected_cents = (expected_total * 100).round(0).cast(pl.Int64)
     total_cents = (total_amount * 100).round(0).cast(pl.Int64)
     mismatch_expr = (expected_cents - total_cents).abs() > rules.PRICE_MISMATCH_TOLERANCE_CENTS
     price_mismatch_mask = df.select((valid_price & mismatch_expr).fill_null(False)).to_series().to_list()
 
+    # Duplicate mask uses both in-batch and existing IDs.
     duplicate_mask = [(tid in duplicate_ids) or (tid in existing_ids) for tid in transaction_ids]
 
+    # Suspicious typos are computed from normalized country/city values.
     country_values = [rules.normalize_value(value) for value in df["country"].to_list()]
     city_values = [rules.normalize_value(value) for value in df["city"].to_list()]
     suspicious_countries = {
@@ -236,6 +422,7 @@ def _evaluate_issue_rows(
         for country, city in zip(country_values, city_values)
     ]
 
+    # Compose the final issue mask by combining all rule masks.
     issue_mask = [
         missing_mask[idx]
         or price_mismatch_mask[idx]
@@ -247,6 +434,7 @@ def _evaluate_issue_rows(
     if not any(issue_mask):
         return issue_mask_series, []
 
+    # Convert raw values to strings for storage in the issues table.
     raw_strings = raw_df.with_columns(
         [
             # Map values are String; replace nulls so ClickHouse can accept them.
@@ -264,6 +452,7 @@ def _evaluate_issue_rows(
             continue
         issues: list[str] = []
         severity: list[str] = []
+        # Build issue codes and severities in a fixed order for consistency.
         if missing_mask[idx]:
             issues.append(rules.RULE_MISSING_REQUIRED)
             severity.append(rules.SEVERITY_ERROR)
@@ -293,10 +482,28 @@ def _evaluate_issue_rows(
 
 
 def _compute_outliers(client, tenant_id: int, table_name: str) -> dict[str, dict[str, float]]:
-    """Compute basic outlier stats for numeric sanity checks."""
+    """Compute basic outlier stats for numeric sanity checks.
+
+    Business purpose:
+        Provide IQR-based outlier metrics for quality reporting.
+    Why it exists:
+        Identifies extreme values that may skew analytics.
+    Where used:
+        Post-load quality checks after ClickHouse insertions.
+    Inputs:
+        client: ClickHouse client for analytics queries.
+        tenant_id: Tenant identifier for isolation.
+        table_name: ClickHouse fact table to query.
+    Returns:
+        Dict of outlier stats keyed by column name.
+    """
     outliers: dict[str, dict[str, float]] = {}
     numeric_cols = ["quantity", "price", "amount"]
     for col in numeric_cols:
+        # Query computes quartiles for IQR-based outlier thresholds.
+        # quantileExact provides deterministic quartiles for reporting.
+        # Tenant filter scopes the scan and aligns with ordering keys.
+        # Single aggregate query avoids multiple passes per column.
         stats = client.execute(
             f"""
             SELECT
@@ -310,9 +517,14 @@ def _compute_outliers(client, tenant_id: int, table_name: str) -> dict[str, dict
         q1, q3 = stats[0]
         if q1 is None or q3 is None:
             continue
+        # IQR-based bounds for outlier detection.
         iqr = q3 - q1
         lower = q1 - 1.5 * iqr
         upper = q3 + 1.5 * iqr
+        # Query counts values outside computed bounds.
+        # CountIf keeps the scan single-pass with minimal output.
+        # Tenant filter ensures isolation and partition pruning.
+        # Uses bounds computed above to avoid recomputing quantiles.
         count = client.execute(
             f"""
             SELECT countIf({col} < %(lower)s OR {col} > %(upper)s)
@@ -339,12 +551,31 @@ def run_etl(
     initiated_by_user_id: int | None = None,
     dry_run: bool = False,
 ) -> EtlRun:
-    """Run the full CSV ingestion with RAW, CLEAN, and ISSUES separation."""
+    """Run the full CSV ingestion with RAW, CLEAN, and ISSUES separation.
+
+    Business purpose:
+        Ingest CSV data into raw, clean, issue, and all fact tables.
+    Why it exists:
+        Centralizes ETL logic with quality checks and tenant isolation.
+    Where used:
+        ETL API endpoint and CLI entrypoint.
+    Inputs:
+        db: SQLAlchemy session for ETL run tracking and report persistence.
+        settings: Runtime configuration for batch sizes and ClickHouse access.
+        tenant: Tenant model for scoping data.
+        csv_path: Path to the CSV file to ingest.
+        initiated_by_user_id: Optional user id to prefer for owner assignment.
+        dry_run: When True, validate but do not write to ClickHouse.
+    Returns:
+        EtlRun record with final status and timestamps.
+    """
+    # Record the ETL run in the relational metadata store.
     run = EtlRun(tenant_id=tenant.id, status="running", started_at=datetime.utcnow())
     db.add(run)
     db.commit()
     db.refresh(run)
 
+    # Ensure ClickHouse schema exists before any inserts.
     client = get_clickhouse_client(settings)
     ensure_clickhouse_schema(client, settings)
     issues_writer = IssuesWriter(client, settings)
@@ -356,6 +587,10 @@ def run_etl(
             all_fact_table(settings),
         ]
         for table in fact_tables:
+            # Clear tenant rows to keep reloads deterministic per tenant.
+            # Query deletes tenant-scoped rows for a full reload.
+            # ALTER DELETE with mutations_sync enforces completion before inserts.
+            # Tenant filter limits mutation scope and cost.
             client.execute(
                 f"ALTER TABLE {table} DELETE WHERE tenant_id = %(tenant_id)s SETTINGS mutations_sync=1",
                 {"tenant_id": tenant.id},
@@ -366,6 +601,7 @@ def run_etl(
     logged_preview = False
     final_status = "success"
 
+    # Collect NORMAL users to assign deterministic owner_user_id values.
     user_ids = [
         user.id
         for user in db.query(User)
@@ -375,6 +611,7 @@ def run_etl(
     default_owner = initiated_by_user_id or (user_ids[0] if user_ids else 0)
 
     try:
+        # Stream CSV batches to keep memory bounded for large datasets.
         reader = pl.read_csv_batched(
             csv_path,
             batch_size=settings.etl_batch_size,
@@ -394,16 +631,19 @@ def run_etl(
             raw_df = _normalize_columns(batch)
             df = raw_df
             if mapping is None:
+                # Build a deterministic mapping once using CSV headers.
                 mapping, unknown_columns = build_explicit_mapping(df.columns)
                 logger.info("Explicit CSV mapping: %s", mapping)
                 if unknown_columns:
                     logger.warning("Unmapped CSV columns: %s", unknown_columns)
 
+            # Rename raw columns to canonical names and enforce expected schema.
             rename_map = {raw: canonical for canonical, raw in mapping.items() if raw in df.columns}
             df = df.rename(rename_map)
             df = df.select(list(rename_map.values()))
             df = _ensure_columns(df, TRANSFORM_COLUMNS)
 
+            # Track total rows for quality ratio calculations.
             quality.add_rows(df.height)
 
             raw_category = df["category"] if "category" in df.columns else None
@@ -491,6 +731,7 @@ def run_etl(
             _count_parse_failures(df["event_ts"], event_ts, "event_ts", quality)
 
             if raw_category is not None:
+                # Normalize categories and track inconsistencies.
                 raw_category_str = _clean_str(raw_category)
                 normalized_category = raw_category_str.str.to_lowercase()
                 mismatch = (raw_category_str != normalized_category) & raw_category_str.is_not_null()
@@ -552,6 +793,7 @@ def run_etl(
                 .select(CLICKHOUSE_COLUMNS)
             )
 
+            # Validate transformed schema before inserting into ClickHouse.
             validate_transformed_dataframe(cleaned)
             _count_missing(cleaned, quality, columns=REQUIRED_TRANSACTION_COLUMNS)
 
@@ -561,6 +803,7 @@ def run_etl(
                 logger.info("Sample rows: %s", sample_rows)
                 logged_preview = True
 
+            # Track duplicates across batches for quality reporting.
             for tid in cleaned["transaction_id"].to_list():
                 tid_str = str(tid)
                 if tid_str in seen_ids:
@@ -569,6 +812,7 @@ def run_etl(
                     seen_ids.add(tid_str)
 
             if not dry_run:
+                # Evaluate rules and split clean vs issue rows.
                 issue_mask, issue_rows = _evaluate_issue_rows(
                     df,
                     raw_df,
@@ -598,6 +842,7 @@ def run_etl(
                 logger.info("Dry-run enabled; stopping after first batch.")
                 break
 
+        # Identify columns with extreme null ratios.
         null_heavy: dict[str, float] = {}
         for col in REQUIRED_TRANSACTION_COLUMNS:
             missing = quality.missing_counts.get(col, 0)
@@ -610,7 +855,12 @@ def run_etl(
             final_status = "warning"
 
         if not dry_run:
+            # Compute outliers and post-load sanity checks in ClickHouse.
             quality.set_outliers(_compute_outliers(client, tenant.id, table))
+            # Query verifies non-null ratio for customer_name after load.
+            # Post-load query validates a key field with a lightweight aggregate.
+            # Single scan with tenant filter keeps verification inexpensive.
+            # Using countIf avoids fetching row-level data.
             verification = client.execute(
                 f"""
                 SELECT
@@ -643,6 +893,7 @@ def run_etl(
         else:
             final_status = "dry_run"
 
+        # Persist the quality report and derived findings for the run.
         report = QualityReport(
             tenant_id=tenant.id,
             etl_run_id=run.id,
@@ -663,6 +914,7 @@ def run_etl(
                 )
             )
 
+        # Finalize the ETL run status.
         run.status = final_status
         run.finished_at = datetime.utcnow()
         db.commit()

@@ -6,19 +6,56 @@ import pytest
 
 
 def _auth_headers(token: str) -> dict[str, str]:
-    """Build Authorization headers for API requests."""
+    """Build Authorization headers for API requests.
+
+    Business purpose:
+        Provide bearer auth headers for QA API calls.
+    Why it exists:
+        Keeps header construction consistent across tests.
+    Where used:
+        QA pagination tests.
+    Inputs:
+        token: JWT access token.
+    Returns:
+        Dict containing Authorization header.
+    """
     return {"Authorization": f"Bearer {token}"}
 
 
 def _get_me(api_client, headers: dict[str, str]) -> dict[str, str]:
-    """Fetch /auth/me to determine the active tenant."""
+    """Fetch /auth/me to determine the active tenant.
+
+    Business purpose:
+        Resolve tenant identity for pagination validation.
+    Why it exists:
+        /auth/me is the source of truth for tenant context.
+    Where used:
+        QA pagination tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        headers: Authorization headers.
+    Returns:
+        Parsed JSON payload from /auth/me.
+    """
     response = api_client.get("/auth/me", headers=headers)
     response.raise_for_status()
     return response.json()
 
 
 def _tenant_id_from_me(me: dict[str, object]) -> int:
-    """Extract tenant_id from the /auth/me payload."""
+    """Extract tenant_id from the /auth/me payload.
+
+    Business purpose:
+        Normalize tenant_id extraction for assertions.
+    Why it exists:
+        Payload may use snake_case or camelCase fields.
+    Where used:
+        QA pagination tests.
+    Inputs:
+        me: /auth/me payload dict.
+    Returns:
+        Tenant id as an integer.
+    """
     tenant_id = me.get("tenant_id", me.get("tenantId"))
     if tenant_id is None:
         raise RuntimeError(f"Expected tenant identifier in /auth/me response: {me}")
@@ -26,7 +63,21 @@ def _tenant_id_from_me(me: dict[str, object]) -> int:
 
 
 def _get_transactions(api_client, headers: dict[str, str], params: dict[str, int | str]) -> dict[str, object]:
-    """Fetch transactions with explicit pagination parameters."""
+    """Fetch transactions with explicit pagination parameters.
+
+    Business purpose:
+        Retrieve paged results for pagination validation.
+    Why it exists:
+        Provides a consistent request path for pagination tests.
+    Where used:
+        QA pagination tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        headers: Authorization headers.
+        params: Query parameters for pagination and sorting.
+    Returns:
+        Parsed JSON payload from the transactions endpoint.
+    """
     response = api_client.get("/analytics/transactions", headers=headers, params=params)
     response.raise_for_status()
     return response.json()
@@ -38,12 +89,21 @@ def test_transactions_pagination_offset_matches_clickhouse(
     clickhouse_client,
     clickhouse_fact_table,
 ):
-    """
-    Validate that API pagination offset matches the expected ClickHouse slice.
+    """Validate API pagination offset matches the ClickHouse slice.
 
-    Why: Incorrect offset calculations can silently duplicate or skip rows.
-    Failure caught: API returning the wrong records for page N.
-    Expected: page 2 results match ClickHouse LIMIT/OFFSET results for the same tenant.
+    Business purpose:
+        Ensure API pagination aligns with ClickHouse ordering and offsets.
+    Why it exists:
+        Detects incorrect offset math or ordering regressions.
+    Where used:
+        QA pagination tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        token_factory: Fixture to issue auth tokens.
+        clickhouse_client: ClickHouse client for validation queries.
+        clickhouse_fact_table: Fact table name for validation.
+    Returns:
+        None; asserts API page matches ClickHouse offset results.
     """
     token = token_factory("alpha_admin")
     headers = _auth_headers(token)
@@ -51,6 +111,9 @@ def test_transactions_pagination_offset_matches_clickhouse(
     tenant_id = _tenant_id_from_me(me)
 
     page_size = 25
+    # Query counts total rows for the tenant to ensure enough data for paging.
+    # Tenant filter keeps the count scoped and avoids scanning other tenants.
+    # COUNT(*) returns a scalar result to minimize output size.
     total_rows = clickhouse_client.execute(
         f"SELECT count() FROM {clickhouse_fact_table} WHERE tenant_id = %(tenant_id)s",
         {"tenant_id": tenant_id},
@@ -58,6 +121,9 @@ def test_transactions_pagination_offset_matches_clickhouse(
     if total_rows < page_size * 2:
         pytest.skip("Not enough rows to validate page 2 offset behavior.")
 
+    # Query returns the expected page based on LIMIT/OFFSET ordering.
+    # ORDER BY + LIMIT/OFFSET mirrors the API pagination behavior.
+    # Tenant filter aligns with partitioning for efficient scanning.
     expected = clickhouse_client.execute(
         f"""
         SELECT transaction_id
@@ -86,12 +152,19 @@ def test_transactions_pagination_offset_matches_clickhouse(
 
 
 def test_transactions_pages_are_non_overlapping(api_client, token_factory):
-    """
-    Ensure consecutive pages do not overlap and maintain consistent ordering.
+    """Ensure consecutive pages do not overlap and maintain ordering.
 
-    Why: Overlap between pages indicates broken pagination or unstable ordering.
-    Failure caught: duplicated rows across pages or inconsistent page boundaries.
-    Expected: page 1 and page 2 have no shared transaction IDs.
+    Business purpose:
+        Verify pagination produces distinct, ordered result sets.
+    Why it exists:
+        Detects duplication or unstable ordering across pages.
+    Where used:
+        QA pagination tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        token_factory: Fixture to issue auth tokens.
+    Returns:
+        None; asserts no overlap between pages.
     """
     token = token_factory("alpha_admin")
     headers = _auth_headers(token)
@@ -119,12 +192,19 @@ def test_transactions_pages_are_non_overlapping(api_client, token_factory):
 
 
 def test_page_size_alias_overrides_page_size_param(api_client, token_factory):
-    """
-    Verify that pageSize (camelCase) overrides page_size when both are provided.
+    """Verify pageSize overrides page_size when both are provided.
 
-    Why: The API supports both styles; regressions here break client compatibility.
-    Failure caught: pageSize ignored or misapplied when both parameters are present.
-    Expected: response pageSize reflects the camelCase parameter and row count respects it.
+    Business purpose:
+        Preserve backward compatibility with camelCase pagination params.
+    Why it exists:
+        Clients may send either page_size or pageSize.
+    Where used:
+        QA pagination tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        token_factory: Fixture to issue auth tokens.
+    Returns:
+        None; asserts pageSize is honored.
     """
     token = token_factory("alpha_admin")
     headers = _auth_headers(token)

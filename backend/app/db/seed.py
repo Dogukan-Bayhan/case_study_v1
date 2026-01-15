@@ -7,7 +7,19 @@ from app.db.session import create_engine_from_settings, get_session_maker
 
 
 def seed_data() -> None:
-    """Populate baseline tenants/users so the UI is usable on first run."""
+    """Seed baseline tenants and users for local/demo environments.
+
+    Business purpose:
+        Provide a usable dataset for UI demos and local development.
+    Why it exists:
+        Avoids manual setup of tenants and users in non-production contexts.
+    Where used:
+        CLI execution and startup workflows when seed_data is enabled.
+    Inputs:
+        None; uses environment-driven settings.
+    Returns:
+        None; inserts demo tenants and users when database is empty.
+    """
     settings = get_settings()
 
     # Seeding is explicitly disabled by default in production environments.
@@ -39,7 +51,7 @@ def seed_data() -> None:
         # before creating users that reference them via foreign keys.
         db.flush()
 
-        
+        # Use a shared password hash for demo accounts.
         password = get_password_hash("password123")
         users = []
         for tenant in tenants:

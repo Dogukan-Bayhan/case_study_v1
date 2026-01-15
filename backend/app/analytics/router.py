@@ -46,15 +46,44 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 def _resolve_scope(scope: str, current_user: User) -> str:
+    """Normalize and enforce analytics scope based on user role.
+
+    Business purpose:
+        Ensure analytics queries only access permitted data scopes.
+    Why it exists:
+        Centralizes scope validation and role-based restrictions.
+    Where used:
+        All analytics endpoints that accept a scope parameter.
+    Inputs:
+        scope: Requested scope string ("clean", "issues", "all").
+        current_user: Authenticated user used for role enforcement.
+    Returns:
+        Normalized scope string that is safe to use in queries.
+    """
     normalized = scope.lower()
+    # Reject unsupported scopes to avoid accidental table access.
     if normalized not in SCOPE_VALUES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported scope")
+    # NORMAL users are restricted to clean data regardless of request.
     if current_user.role == RoleEnum.NORMAL and normalized != "clean":
         return "clean"
     return normalized
 
 
 def _parse_filters(request: Request) -> dict[str, object]:
+    """Parse dashboard filter query parameters into a filter map.
+
+    Business purpose:
+        Convert HTTP query parameters into a structured filter dict.
+    Why it exists:
+        Keeps filter parsing consistent across analytics endpoints.
+    Where used:
+        FastAPI dependency in analytics endpoints.
+    Inputs:
+        request: Incoming HTTP request containing query parameters.
+    Returns:
+        Dict of filter keys to typed values.
+    """
     return parse_filters(request.query_params)
 
 # ---------------------------------------------------------------------
@@ -71,30 +100,28 @@ def kpis(
     settings=Depends(get_settings),
     filters: dict[str, object] = Depends(_parse_filters),
 ) -> KPIs:
+    """Return KPI aggregates for the dashboard tiles.
+
+    Business purpose:
+        Provide revenue, orders, AOV, and customer counts for summary cards.
+    Why it exists:
+        Encapsulates KPI retrieval and tenant/role scoping in one endpoint.
+    Where used:
+        Dashboard KPI tiles on the main analytics page.
+    Inputs:
+        scope: Requested analytics scope ("clean", "issues", "all").
+        current_user: Authenticated user for tenant and role scoping.
+        client: ClickHouse client for analytics queries.
+        settings: App settings used to resolve scope tables.
+        filters: Parsed dashboard filters from query params.
+    Returns:
+        KPIs response model with aggregated metrics.
     """
-    GET /analytics/kpis
-
-    Frontend request:
-        GET /analytics/kpis
-        Authorization: Bearer <JWT>
-
-    No query parameters are required.
-
-    Purpose:
-    - Return high-level KPI aggregates for the dashboard tiles
-    - Metrics include revenue, order count, average order value, and unique customers
-
-    Authorization & scoping:
-    - ADMIN / GUEST users see all data within their tenant
-    - NORMAL users see only their own transactions
-    """
-
-    # NORMAL users are restricted to their own data
-    # ADMIN and GUEST users can see all data for the tenant
+    # NORMAL users are restricted to their own data; others see tenant-wide data.
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
-    # Resolve the analytics fact table in ClickHouse
+    # Resolve the analytics fact table based on scope and user role.
     table = build_scope_table(settings, _resolve_scope(scope, current_user))
-    # Delegate KPI aggregation to the analytics service layer
+    # Delegate aggregation to the analytics service layer.
     return get_kpis(client, table, current_user.tenant_id, owner_filter, filters)
 
 
@@ -115,24 +142,28 @@ def timeseries(
     settings=Depends(get_settings),
     filters: dict[str, object] = Depends(_parse_filters),
 ) -> list[TimeSeriesPoint]:
+    """Return time-series points for chart visualizations.
+
+    Business purpose:
+        Power charting for revenue/orders over time.
+    Why it exists:
+        Provides a validated, scoped entrypoint for time-series queries.
+    Where used:
+        Dashboard chart widgets.
+    Inputs:
+        metric: Metric key to aggregate (revenue, orders, customers).
+        grain: Time grain for grouping (day, week, month).
+        scope: Requested analytics scope.
+        current_user: Authenticated user for scoping.
+        client: ClickHouse client for analytics queries.
+        settings: App settings used to resolve scope tables.
+        filters: Parsed dashboard filters from query params.
+    Returns:
+        List of TimeSeriesPoint entries for charting.
     """
-    GET /analytics/timeseries
-
-    Frontend request examples:
-        GET /analytics/timeseries?metric=revenue&grain=day
-        GET /analytics/timeseries?metric=orders&grain=month
-
-    Purpose:
-    - Provide time-series data for charts (line / bar charts)
-    - Aggregates data over time based on the selected metric and grain
-
-    Authorization & scoping:
-    - ADMIN / GUEST users see tenant-wide time series
-    - NORMAL users see only their own activity
-    """
-
-    # Apply owner-level filtering only for NORMAL users
+    # Apply owner-level filtering only for NORMAL users.
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    # Resolve the correct fact table before querying.
     table = build_scope_table(settings, _resolve_scope(scope, current_user))
     return get_timeseries(client, metric, grain, table, current_user.tenant_id, owner_filter, filters)
 
@@ -152,21 +183,28 @@ def top_products(
     settings=Depends(get_settings),
     filters: dict[str, object] = Depends(_parse_filters),
 ) -> list[TopProduct]:
+    """Return a ranked list of top products by metric.
+
+    Business purpose:
+        Provide product leaderboards for revenue or quantity insights.
+    Why it exists:
+        Encapsulates ranking logic with consistent scope enforcement.
+    Where used:
+        Dashboard leaderboard widgets.
+    Inputs:
+        limit: Maximum number of products to return.
+        metric: Metric key for ranking (revenue or quantity).
+        scope: Requested analytics scope.
+        current_user: Authenticated user for scoping.
+        client: ClickHouse client for analytics queries.
+        settings: App settings used to resolve scope tables.
+        filters: Parsed dashboard filters from query params.
+    Returns:
+        List of TopProduct entries ordered by the requested metric.
     """
-    GET /analytics/top-products
-
-    Frontend request example:
-        GET /analytics/top-products?limit=10
-
-    Purpose:
-    - Return a ranked list of top products by revenue
-    - Used for leaderboard-style analytics or summary tables
-
-    Authorization & scoping:
-    - ADMIN / GUEST users see tenant-wide rankings
-    - NORMAL users see rankings based only on their own transactions
-    """
+    # Apply owner-level filtering only for NORMAL users.
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    # Resolve the correct fact table based on scope.
     table = build_scope_table(settings, _resolve_scope(scope, current_user))
     return get_top_products(client, table, current_user.tenant_id, owner_filter, limit, metric, filters)
 
@@ -184,7 +222,28 @@ def breakdown(
     settings=Depends(get_settings),
     filters: dict[str, object] = Depends(_parse_filters),
 ) -> list[BreakdownRow]:
+    """Return aggregated breakdown rows for a single dimension.
+
+    Business purpose:
+        Provide rollup tables by country, category, department, etc.
+    Why it exists:
+        Exposes grouped analytics in a controlled and validated way.
+    Where used:
+        Dashboard breakdown widgets.
+    Inputs:
+        dimension: Grouping dimension key.
+        limit: Maximum number of groups to return.
+        scope: Requested analytics scope.
+        current_user: Authenticated user for scoping.
+        client: ClickHouse client for analytics queries.
+        settings: App settings used to resolve scope tables.
+        filters: Parsed dashboard filters from query params.
+    Returns:
+        List of BreakdownRow entries.
+    """
+    # Apply owner-level filtering only for NORMAL users.
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    # Resolve the correct fact table based on scope.
     table = build_scope_table(settings, _resolve_scope(scope, current_user))
     return get_breakdown(client, table, current_user.tenant_id, owner_filter, dimension, limit, filters)
 
@@ -200,7 +259,26 @@ def customer_segments(
     settings=Depends(get_settings),
     filters: dict[str, object] = Depends(_parse_filters),
 ) -> list[CustomerSegment]:
+    """Return new vs returning customer segment aggregates.
+
+    Business purpose:
+        Surface customer mix metrics for retention insights.
+    Why it exists:
+        Provides a single endpoint for segment aggregation.
+    Where used:
+        Dashboard customer segment widget.
+    Inputs:
+        scope: Requested analytics scope.
+        current_user: Authenticated user for scoping.
+        client: ClickHouse client for analytics queries.
+        settings: App settings used to resolve scope tables.
+        filters: Parsed dashboard filters from query params.
+    Returns:
+        List of CustomerSegment entries for New and Returning segments.
+    """
+    # Apply owner-level filtering only for NORMAL users.
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    # Resolve the correct fact table based on scope.
     table = build_scope_table(settings, _resolve_scope(scope, current_user))
     return get_customer_segments(client, table, current_user.tenant_id, owner_filter, filters)
 
@@ -219,19 +297,49 @@ def filter_options(
     settings=Depends(get_settings),
     filters: dict[str, object] = Depends(_parse_filters),
 ) -> list[FilterOption]:
+    """Return distinct values for a filter field with optional search.
+
+    Business purpose:
+        Provide autocomplete suggestions for filter inputs.
+    Why it exists:
+        Keeps filter option retrieval consistent and scoped by tenant/filters.
+    Where used:
+        Dashboard and Slice & Dice filter auto-complete fields.
+    Inputs:
+        field: Filter field name to fetch values for.
+        q: Optional search substring to narrow results.
+        limit: Maximum number of options to return.
+        scope: Requested analytics scope.
+        current_user: Authenticated user for scoping.
+        client: ClickHouse client for analytics queries.
+        settings: App settings used to resolve scope tables.
+        filters: Parsed dashboard filters from query params.
+    Returns:
+        List of FilterOption values for the requested field.
+    """
+    # Only allow fields that have been explicitly whitelisted.
     if field not in FILTER_OPTION_FIELDS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported filter field")
+    # Prevent the field being queried from filtering itself.
     if field in filters:
         filters.pop(field)
+    # Normalize the search string to avoid empty predicates.
     if q:
         q = q.strip() or None
+    # Apply owner-level filtering only for NORMAL users.
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    # Resolve the correct fact table based on scope.
     table = build_scope_table(settings, _resolve_scope(scope, current_user))
+    # Build tenant and filter scoped WHERE clause.
     where, params = build_where_clause(current_user.tenant_id, owner_filter, filters)
     params["limit"] = limit
     if q:
+        # Use case-insensitive substring match for autocomplete.
         params["search"] = q
         where += f" AND positionCaseInsensitive({field}, %(search)s) > 0"
+    # Query returns distinct values with a hard limit for safety.
+    # Distinct + LIMIT keeps autocomplete responsive on large datasets.
+    # WHERE clause enforces tenant isolation and optional filters.
     query = (
         f"SELECT DISTINCT {field} AS value "
         f"FROM {table} "
@@ -260,40 +368,53 @@ def transactions(
     client=Depends(get_clickhouse),
     settings=Depends(get_settings),
 ) -> TransactionPage:
+    """Return paginated transactions for the explorer table.
+
+    Business purpose:
+        Serve transaction-level data to the UI with pagination and sorting.
+    Why it exists:
+        Centralizes validation for pagination, sorting, and role-based limits.
+    Where used:
+        Transactions explorer page and API clients.
+    Inputs:
+        page: 1-based page index.
+        page_size: Requested page size.
+        pageSize: Optional alias from the UI for page size.
+        sort_by: Sort column key.
+        sort_dir: Sort direction (asc/desc).
+        search: Optional transaction_id search term.
+        search_mode: Search mode ("contains" or "exact").
+        current_user: Authenticated user for scoping and caps.
+        client: ClickHouse client for analytics queries.
+        settings: App settings used to resolve tables.
+    Returns:
+        TransactionPage payload with rows and total count.
     """
-    GET /analytics/transactions
-
-    Frontend request example:
-        GET /analytics/transactions?page=1&pageSize=25&sort_by=order_date&sort_dir=desc
-
-    Purpose:
-    - Return a paginated list of individual transactions
-    - Used to populate the main transactions table in the UI
-
-    Features:
-    - Server-side pagination
-    - Strict sort validation
-    - Role-based data visibility
-    """
+    # Allow UI alias to override the default page_size parameter.
     if pageSize is not None:
         page_size = pageSize
 
+    # NORMAL users are scoped to their own transactions.
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
 
+    # GUEST users are capped to reduce exposure and query load.
     if current_user.role == RoleEnum.GUEST:
         page_size = min(page_size, 25)
 
+    # Validate sort column and direction to prevent unsafe queries.
     if sort_by not in TRANSACTION_SORTABLE:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported sort column")
     
     if sort_dir.lower() not in {"asc", "desc"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported sort direction")
 
+    # Validate search mode and normalize the search string.
     if search_mode not in {"contains", "exact"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported search mode")
     if search:
         search = search.strip() or None
     
+    # Transactions endpoint always reads from clean facts for consistency.
     table = build_scope_table(settings, "clean")
     return get_transactions(
         client,
@@ -319,15 +440,36 @@ def ad_hoc(
     client=Depends(get_clickhouse),
     settings=Depends(get_settings),
 ) -> AdHocResponse:
+    """Execute ad-hoc analytics for the Slice & Dice Studio.
+
+    Business purpose:
+        Allow analysts to build custom metrics/dimensions in a single query.
+    Why it exists:
+        Provides a validated, performance-safe entrypoint for ad-hoc analytics.
+    Where used:
+        Slice & Dice Studio page.
+    Inputs:
+        payload: AdHocRequest containing scope, metrics, dimensions, and filters.
+        current_user: Authenticated user for tenant and role scoping.
+        client: ClickHouse client for analytics queries.
+        settings: App settings used to resolve scope tables.
+    Returns:
+        AdHocResponse with columns, rows, and pagination metadata.
+    """
+    # Normalize and enforce scope based on the user's role.
     scope = _resolve_scope(payload.scope, current_user)
+    # NORMAL users are scoped to their own transactions.
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
 
+    # Clamp pagination inputs to guard against unbounded queries.
     limit = max(1, min(payload.limit, 500))
     offset = max(0, payload.offset)
+    # Normalize sort direction and validate accepted values.
     sort_dir = payload.sort_dir.lower()
     if sort_dir not in {"asc", "desc"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported sort direction")
 
+    # Resolve the fact table based on requested scope.
     table = build_scope_table(settings, scope)
     try:
         return get_ad_hoc_results(
@@ -346,4 +488,5 @@ def ad_hoc(
             sort_dir,
         )
     except ValueError as exc:
+        # Convert validation errors into a client-friendly 400 response.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

@@ -32,9 +32,27 @@ def _fetch_query_log_metrics(
     timeout_seconds: float = 2.0,
     poll_interval_seconds: float = 0.2,
 ) -> dict[str, int] | None:
-    """Poll the ClickHouse query log for detailed metrics by query id."""
+    """Poll the ClickHouse query log for metrics tied to a query id.
+
+    Business purpose:
+        Capture low-level performance metrics for benchmark reporting.
+    Why it exists:
+        ClickHouse exposes per-query metrics in system.query_log.
+    Where used:
+        Benchmarks that wrap query execution with telemetry.
+    Inputs:
+        client: ClickHouse client for metadata queries.
+        query_id: Query identifier to look up in the log.
+        timeout_seconds: Maximum time to wait for log entry.
+        poll_interval_seconds: Sleep duration between polls.
+    Returns:
+        Dict of metrics when available, otherwise None.
+    """
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
+        # Query system.query_log for the most recent finished entry.
+        # ORDER BY event_time_microseconds ensures we pick the latest sample.
+        # Metadata-only query keeps polling overhead low for benchmarks.
         rows = client.execute(
             """
             SELECT read_rows, read_bytes, result_rows, memory_usage, query_duration_ms
@@ -59,13 +77,31 @@ def _fetch_query_log_metrics(
 
 
 def run_query_with_metrics(client, query: str, params: dict | None = None) -> tuple[QueryMetrics, list]:
-    """Execute a query and return metrics plus result rows."""
+    """Execute a query and return metrics plus result rows.
+
+    Business purpose:
+        Provide a single execution path that captures performance telemetry.
+    Why it exists:
+        Benchmarks need consistent metrics for comparison.
+    Where used:
+        Benchmark tests and performance scripts.
+    Inputs:
+        client: ClickHouse client to execute the query.
+        query: SQL query string to execute.
+        params: Optional query parameters.
+    Returns:
+        Tuple of QueryMetrics and the result rows.
+    """
     query_id = f"bench-{uuid.uuid4().hex}"
     start = time.perf_counter()
+    # Execute the query with an explicit query_id for log correlation.
+    # Single execution path ensures benchmark metrics are comparable.
+    # Query text is provided by the caller; no extra scans are added here.
     result = client.execute(query, params or {}, settings={"query_id": query_id})
     elapsed = time.perf_counter() - start
     result_rows = len(result)
 
+    # Pull additional metrics from the query log when available.
     log_metrics = _fetch_query_log_metrics(client, query_id)
     read_rows = log_metrics["read_rows"] if log_metrics else None
     read_bytes = log_metrics["read_bytes"] if log_metrics else None
@@ -87,7 +123,19 @@ def run_query_with_metrics(client, query: str, params: dict | None = None) -> tu
 
 
 def summarize_metrics(metrics: list[QueryMetrics]) -> dict[str, float]:
-    """Summarize elapsed time metrics for reporting."""
+    """Summarize elapsed time metrics for reporting.
+
+    Business purpose:
+        Provide aggregate latency statistics for benchmark runs.
+    Why it exists:
+        Consistent summary metrics are needed for regression tracking.
+    Where used:
+        Benchmark output and reports.
+    Inputs:
+        metrics: List of QueryMetrics from benchmark runs.
+    Returns:
+        Dict containing min, avg, max, and p95 elapsed times.
+    """
     elapsed_values = [item.elapsed_seconds for item in metrics]
     if not elapsed_values:
         return {"min": 0.0, "avg": 0.0, "max": 0.0, "p95": 0.0}
@@ -102,7 +150,21 @@ def summarize_metrics(metrics: list[QueryMetrics]) -> dict[str, float]:
 
 
 def print_metrics(label: str, run_type: str, metrics: QueryMetrics) -> None:
-    """Print a single-line metrics record for easy parsing."""
+    """Print and record a single benchmark run.
+
+    Business purpose:
+        Emit machine-parseable benchmark results.
+    Why it exists:
+        Makes benchmark output easy to parse in CI pipelines.
+    Where used:
+        Benchmark tests after each query run.
+    Inputs:
+        label: Benchmark label.
+        run_type: Cold/warm run classification.
+        metrics: QueryMetrics captured for the run.
+    Returns:
+        None; appends to BENCHMARK_RUNS and prints output.
+    """
     BENCHMARK_RUNS.append(
         {
             "label": label,
@@ -120,7 +182,20 @@ def print_metrics(label: str, run_type: str, metrics: QueryMetrics) -> None:
 
 
 def print_summary(label: str, summary: dict[str, float]) -> None:
-    """Print summary metrics for warm runs."""
+    """Print and record summary metrics for warm runs.
+
+    Business purpose:
+        Emit aggregate performance metrics for reporting.
+    Why it exists:
+        Summaries are required to compare benchmark runs over time.
+    Where used:
+        Benchmark tests after collecting multiple samples.
+    Inputs:
+        label: Benchmark label.
+        summary: Summary dict from summarize_metrics.
+    Returns:
+        None; appends to BENCHMARK_SUMMARIES and prints output.
+    """
     BENCHMARK_SUMMARIES.append(
         {
             "label": label,
@@ -134,14 +209,43 @@ def print_summary(label: str, summary: dict[str, float]) -> None:
 
 
 def record_concurrency_summary(tenant: str, avg: float, p95: float, samples: int) -> None:
-    """Record summary stats for concurrent tenant benchmarks."""
+    """Record summary stats for concurrent tenant benchmarks.
+
+    Business purpose:
+        Persist concurrency benchmark results for later reporting.
+    Why it exists:
+        Keeps concurrent benchmark summaries consistent across runs.
+    Where used:
+        Concurrent benchmark tests.
+    Inputs:
+        tenant: Tenant label used in the benchmark.
+        avg: Average latency in seconds.
+        p95: P95 latency in seconds.
+        samples: Number of samples collected.
+    Returns:
+        None; appends to CONCURRENCY_SUMMARIES.
+    """
     CONCURRENCY_SUMMARIES.append(
         {"tenant": tenant, "avg": avg, "p95": p95, "samples": samples}
     )
 
 
 def format_benchmark_run(label: str, run_type: str, metrics: QueryMetrics) -> str:
-    """Format a single benchmark run in a stable, parseable line."""
+    """Format a single benchmark run in a stable, parseable line.
+
+    Business purpose:
+        Provide a consistent output format for benchmark runs.
+    Why it exists:
+        Enables parsing by tooling and dashboards.
+    Where used:
+        print_metrics output.
+    Inputs:
+        label: Benchmark label.
+        run_type: Cold/warm run classification.
+        metrics: QueryMetrics for the run.
+    Returns:
+        Formatted string line.
+    """
     return (
         f"[BENCH] {label} run={run_type} "
         f"elapsed={metrics.elapsed_seconds:.4f}s "
@@ -155,7 +259,20 @@ def format_benchmark_run(label: str, run_type: str, metrics: QueryMetrics) -> st
 
 
 def format_benchmark_summary(label: str, summary: dict[str, float]) -> str:
-    """Format aggregate warm-run metrics for console output."""
+    """Format aggregate warm-run metrics for console output.
+
+    Business purpose:
+        Present summarized benchmark metrics in a readable line.
+    Why it exists:
+        Standardizes summary output for parsing.
+    Where used:
+        print_summary output.
+    Inputs:
+        label: Benchmark label.
+        summary: Summary metrics dict.
+    Returns:
+        Formatted string line.
+    """
     return (
         f"[BENCH] {label} warm_summary "
         f"min={summary['min']:.4f}s avg={summary['avg']:.4f}s "
@@ -164,7 +281,19 @@ def format_benchmark_summary(label: str, summary: dict[str, float]) -> str:
 
 
 def format_concurrency_summary(record: dict[str, object]) -> str:
-    """Format concurrency results for console output."""
+    """Format concurrency results for console output.
+
+    Business purpose:
+        Provide a consistent line format for concurrency results.
+    Why it exists:
+        Enables downstream tooling to parse concurrency summaries.
+    Where used:
+        Concurrency benchmark output.
+    Inputs:
+        record: Dict containing tenant, avg, p95, and samples.
+    Returns:
+        Formatted string line.
+    """
     return (
         "[CONCURRENCY] "
         f"tenant={record['tenant']} "

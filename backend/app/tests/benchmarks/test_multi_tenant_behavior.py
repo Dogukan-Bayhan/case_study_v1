@@ -16,19 +16,56 @@ PAGE_SIZE = int(os.getenv("QA_TENANT_PAGE_SIZE", "50"))
 
 
 def _auth_headers(token: str) -> dict[str, str]:
-    """Build Authorization headers for API calls."""
+    """Build Authorization headers for API calls.
+
+    Business purpose:
+        Provide bearer auth headers for benchmark requests.
+    Why it exists:
+        Keeps token header creation consistent across tests.
+    Where used:
+        Multi-tenant benchmark helper functions.
+    Inputs:
+        token: JWT access token string.
+    Returns:
+        Dict containing Authorization header.
+    """
     return {"Authorization": f"Bearer {token}"}
 
 
 def _get_me(api_client, headers: dict[str, str]) -> dict[str, str]:
-    """Fetch /auth/me to identify the current tenant."""
+    """Fetch /auth/me to identify the current tenant.
+
+    Business purpose:
+        Resolve tenant identity for a token in benchmarks.
+    Why it exists:
+        Ensures tenant-specific assertions use the correct tenant id.
+    Where used:
+        Multi-tenant benchmark tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        headers: Authorization headers.
+    Returns:
+        Parsed JSON payload from /auth/me.
+    """
     response = api_client.get("/auth/me", headers=headers)
     response.raise_for_status()
     return response.json()
 
 
 def _tenant_id_from_me(me: dict[str, object]) -> int:
-    """Extract tenant_id from the /auth/me payload."""
+    """Extract tenant_id from the /auth/me payload.
+
+    Business purpose:
+        Normalize tenant_id extraction from API responses.
+    Why it exists:
+        The API may return tenant_id in snake or camel case.
+    Where used:
+        Multi-tenant benchmark tests.
+    Inputs:
+        me: /auth/me payload dict.
+    Returns:
+        Tenant id as an integer.
+    """
     tenant_id = me.get("tenant_id", me.get("tenantId"))
     if tenant_id is None:
         raise RuntimeError(f"Expected tenant identifier in /auth/me response: {me}")
@@ -36,7 +73,22 @@ def _tenant_id_from_me(me: dict[str, object]) -> int:
 
 
 def _get_transactions(api_client, headers: dict[str, str], page: int, page_size: int) -> dict[str, object]:
-    """Fetch a page of transactions with stable sort ordering."""
+    """Fetch a page of transactions with stable sort ordering.
+
+    Business purpose:
+        Retrieve a deterministic page of transactions for comparisons.
+    Why it exists:
+        Ensures pagination tests use consistent ordering.
+    Where used:
+        Multi-tenant benchmark tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        headers: Authorization headers.
+        page: Page index (1-based).
+        page_size: Number of rows per page.
+    Returns:
+        Parsed JSON payload from the transactions endpoint.
+    """
     response = api_client.get(
         "/analytics/transactions",
         headers=headers,
@@ -47,7 +99,22 @@ def _get_transactions(api_client, headers: dict[str, str], page: int, page_size:
 
 
 def _timed_transactions(api_client, headers: dict[str, str], page: int, page_size: int) -> tuple[float, dict]:
-    """Measure the latency of a transactions request."""
+    """Measure the latency of a transactions request.
+
+    Business purpose:
+        Capture latency for concurrent transaction page requests.
+    Why it exists:
+        Benchmarks need per-request timing for latency distributions.
+    Where used:
+        Concurrent tenant load test.
+    Inputs:
+        api_client: HTTP client for API requests.
+        headers: Authorization headers.
+        page: Page index (1-based).
+        page_size: Number of rows per page.
+    Returns:
+        Tuple of elapsed seconds and response payload.
+    """
     start = time.perf_counter()
     payload = _get_transactions(api_client, headers, page, page_size)
     elapsed = time.perf_counter() - start
@@ -55,9 +122,27 @@ def _timed_transactions(api_client, headers: dict[str, str], page: int, page_siz
 
 
 def _query_ids_for_tenant(clickhouse_client, table: str, tenant_id: int, ids: list[str]) -> set[str]:
-    """Validate transaction IDs exist for a tenant in ClickHouse."""
+    """Validate transaction IDs exist for a tenant in ClickHouse.
+
+    Business purpose:
+        Cross-check API responses against ClickHouse source of truth.
+    Why it exists:
+        Detects tenant leakage or missing records in API output.
+    Where used:
+        Multi-tenant isolation benchmarks.
+    Inputs:
+        clickhouse_client: ClickHouse client for queries.
+        table: Fully qualified fact table name.
+        tenant_id: Tenant identifier for isolation.
+        ids: Transaction IDs to validate.
+    Returns:
+        Set of transaction IDs found in ClickHouse for the tenant.
+    """
     if not ids:
         return set()
+    # Query returns only ids that belong to the tenant.
+    # Tenant filter keeps the lookup scoped and aligned with partitioning.
+    # IN list is bounded by the page size to keep the query lightweight.
     rows = clickhouse_client.execute(
         f"""
         SELECT transaction_id
@@ -75,12 +160,21 @@ def test_tenant_rows_belong_to_clickhouse_tenant(
     clickhouse_client,
     clickhouse_fact_table,
 ):
-    """
-    Ensure API rows returned for each tenant exist in ClickHouse for that tenant.
+    """Ensure API rows exist in ClickHouse for the same tenant.
 
-    Why: Verifies tenant scoping at the API layer against the source of truth.
-    Expected: every transaction_id returned by the API exists under the same tenant_id in ClickHouse.
-    Failure indicates: tenant filter missing or API returning rows from the wrong tenant.
+    Business purpose:
+        Validate tenant scoping from API to ClickHouse source data.
+    Why it exists:
+        Detects cross-tenant leakage or mismatched tenant filters.
+    Where used:
+        Multi-tenant isolation benchmark tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        token_factory: Fixture to issue auth tokens.
+        clickhouse_client: ClickHouse client for direct validation.
+        clickhouse_fact_table: Fact table name for validation queries.
+    Returns:
+        None; asserts no missing transaction IDs.
     """
     for user_key in ("alpha_admin", "beta_admin"):
         token = token_factory(user_key)
@@ -104,12 +198,21 @@ def test_tenant_result_sets_do_not_overlap_unless_data_shared(
     clickhouse_client,
     clickhouse_fact_table,
 ):
-    """
-    Compare tenant result sets to detect potential cross-tenant leakage.
+    """Compare tenant result sets to detect potential cross-tenant leakage.
 
-    Why: If tenant A sees tenant B rows, transaction IDs will overlap where data is not shared.
-    Expected: overlap is empty, or any overlap corresponds to rows that exist in both tenants.
-    Failure indicates: tenant leakage in API results.
+    Business purpose:
+        Verify that tenant result sets do not overlap unexpectedly.
+    Why it exists:
+        Overlap can indicate tenant leakage in API results.
+    Where used:
+        Multi-tenant isolation benchmark tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        token_factory: Fixture to issue auth tokens.
+        clickhouse_client: ClickHouse client for direct validation.
+        clickhouse_fact_table: Fact table name for validation queries.
+    Returns:
+        None; asserts any overlap is valid.
     """
     alpha_token = token_factory("alpha_admin")
     beta_token = token_factory("beta_admin")
@@ -146,12 +249,19 @@ def test_tenant_result_sets_do_not_overlap_unless_data_shared(
 
 
 def test_pagination_consistency_per_tenant(api_client, token_factory):
-    """
-    Ensure pagination is consistent and non-overlapping per tenant.
+    """Ensure pagination is consistent and non-overlapping per tenant.
 
-    Why: Each tenant should page independently without duplication or skipped rows.
-    Expected: page 1 and page 2 have no overlapping transaction IDs for each tenant.
-    Failure indicates: broken offset logic or unstable ordering.
+    Business purpose:
+        Validate pagination ordering and offset logic per tenant.
+    Why it exists:
+        Detects duplication or skipping in paginated results.
+    Where used:
+        Multi-tenant pagination benchmark tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        token_factory: Fixture to issue auth tokens.
+    Returns:
+        None; asserts page results do not overlap.
     """
     for user_key in ("alpha_admin", "beta_admin"):
         token = token_factory(user_key)
@@ -169,12 +279,19 @@ def test_pagination_consistency_per_tenant(api_client, token_factory):
 
 
 def test_concurrent_tenant_load_latency(api_client, token_factory):
-    """
-    Simulate concurrent tenant traffic and record per-tenant latency.
+    """Simulate concurrent tenant traffic and record per-tenant latency.
 
-    Why: Concurrent tenant traffic should not cause errors or extreme latency spikes.
-    Expected: all requests succeed and latency stays below QA_MAX_LATENCY_SECONDS.
-    Failure indicates: instability under parallel load or tenant-level degradation.
+    Business purpose:
+        Validate latency and stability under concurrent tenant load.
+    Why it exists:
+        Detects regressions in multi-tenant concurrency handling.
+    Where used:
+        Concurrency benchmark tests.
+    Inputs:
+        api_client: HTTP client for API requests.
+        token_factory: Fixture to issue auth tokens.
+    Returns:
+        None; asserts latency thresholds and no errors.
     """
     alpha_token = token_factory("alpha_admin")
     beta_token = token_factory("beta_admin")

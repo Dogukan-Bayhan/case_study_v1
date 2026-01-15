@@ -28,5 +28,18 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Cache settings to avoid repeated environment parsing per request."""
+    """Load and cache application settings for backend services.
+
+    Business purpose:
+        Provide a single, consistent configuration source for APIs, ETL, and DB clients.
+    Why it exists:
+        Parsing environment variables is expensive and should happen once per process.
+    Where used:
+        Injected via dependencies and during app startup initialization.
+    Inputs:
+        None; values are read from the environment and defaults.
+    Returns:
+        Settings instance with resolved runtime configuration.
+    """
+    # lru_cache ensures settings are constructed once per process.
     return Settings()

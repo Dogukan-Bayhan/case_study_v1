@@ -90,7 +90,19 @@ ISSUES_TABLE_COLUMNS = [
 
 
 def get_clickhouse_client(settings: Settings) -> Client:
-    """Build a ClickHouse client using runtime settings for analytics workloads."""
+    """Create a ClickHouse client configured for analytics queries.
+
+    Business purpose:
+        Provide a reusable client for ClickHouse-backed analytics.
+    Why it exists:
+        Centralizes connection configuration and credentials.
+    Where used:
+        Analytics endpoints, ETL processes, and startup schema checks.
+    Inputs:
+        settings: Runtime configuration containing ClickHouse connection details.
+    Returns:
+        Configured ClickHouse Client instance.
+    """
     return Client(
         host=settings.clickhouse_host,
         port=settings.clickhouse_port,
@@ -102,33 +114,112 @@ def get_clickhouse_client(settings: Settings) -> Client:
 
 
 def fact_table(settings: Settings) -> str:
-    """Return the fully qualified CLEAN fact table name."""
+    """Return the fully qualified CLEAN fact table name.
+
+    Business purpose:
+        Identify the primary analytics table containing validated records.
+    Why it exists:
+        Avoids scattering table name formatting across the codebase.
+    Where used:
+        Analytics query builders and services.
+    Inputs:
+        settings: Runtime configuration containing ClickHouse database name.
+    Returns:
+        Fully qualified table name for clean facts.
+    """
     return f"{settings.clickhouse_database}.fact_transactions_clean"
 
 
 def issue_fact_table(settings: Settings) -> str:
-    """Return the fully qualified ISSUE fact table name."""
+    """Return the fully qualified ISSUE fact table name.
+
+    Business purpose:
+        Identify the analytics table containing records with quality issues.
+    Why it exists:
+        Centralizes issue table naming for consistency.
+    Where used:
+        Analytics scope resolution and quality workflows.
+    Inputs:
+        settings: Runtime configuration containing ClickHouse database name.
+    Returns:
+        Fully qualified table name for issue facts.
+    """
     return f"{settings.clickhouse_database}.fact_transactions_issue"
 
 
 def all_fact_table(settings: Settings) -> str:
-    """Return the fully qualified ALL fact table name."""
+    """Return the fully qualified ALL fact table name.
+
+    Business purpose:
+        Identify the analytics table containing all records regardless of quality.
+    Why it exists:
+        Centralizes combined table naming for scope resolution.
+    Where used:
+        Analytics scope resolution and ad-hoc queries.
+    Inputs:
+        settings: Runtime configuration containing ClickHouse database name.
+    Returns:
+        Fully qualified table name for all facts.
+    """
     return f"{settings.clickhouse_database}.fact_transactions_all"
 
 
 def raw_table(settings: Settings) -> str:
-    """Return the fully qualified RAW table name for audit storage."""
+    """Return the fully qualified RAW table name for audit storage.
+
+    Business purpose:
+        Identify the raw ingestion table containing unmodified CSV rows.
+    Why it exists:
+        Ensures raw table naming stays consistent across ETL and quality logic.
+    Where used:
+        ETL writers and quality overview queries.
+    Inputs:
+        settings: Runtime configuration containing ClickHouse database name.
+    Returns:
+        Fully qualified table name for raw ingestion data.
+    """
     return f"{settings.clickhouse_database}.fact_transactions_raw"
 
 
 def issues_table(settings: Settings) -> str:
-    """Return the fully qualified ISSUES table name for rule violations."""
+    """Return the fully qualified ISSUES table name for rule violations.
+
+    Business purpose:
+        Identify the table that stores data quality issue records.
+    Why it exists:
+        Keeps quality table naming consistent across the backend.
+    Where used:
+        Quality APIs and ETL issue writers.
+    Inputs:
+        settings: Runtime configuration containing ClickHouse database name.
+    Returns:
+        Fully qualified table name for quality issues.
+    """
     return f"{settings.clickhouse_database}.fact_transactions_issues"
 
 
 def _ensure_fact_table(client: Client, settings: Settings, table_name: str) -> None:
-    """Create a fact table with the canonical analytics schema and apply drift fixes."""
+    """Create or evolve a fact table to match the analytics schema.
+
+    Business purpose:
+        Ensure fact tables have the correct columns for analytics queries.
+    Why it exists:
+        ClickHouse tables may drift between deployments; this guards against schema mismatch.
+    Where used:
+        ensure_clickhouse_schema during application startup.
+    Inputs:
+        client: ClickHouse client for executing DDL.
+        settings: Runtime configuration containing database name.
+        table_name: Unqualified table name for the fact table.
+    Returns:
+        None; creates or alters tables as needed.
+    """
+    # Build column definitions from the canonical schema list.
     column_defs = ",\n            ".join(f"{name} {dtype}" for name, dtype in CLICKHOUSE_SCHEMA)
+    # Create the table if it does not exist with the standard MergeTree layout.
+    # Partitioning and ordering enable efficient time- and tenant-scoped queries.
+    # DDL uses IF NOT EXISTS to remain safe across repeated startups.
+    # Order keys align with tenant and time filters to aid pruning.
     client.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {settings.clickhouse_database}.{table_name} (
@@ -140,6 +231,9 @@ def _ensure_fact_table(client: Client, settings: Settings, table_name: str) -> N
         """
     )
 
+    # Query existing columns to detect schema drift.
+    # Reads ClickHouse metadata only; avoids scanning table data.
+    # Keeps schema evolution lightweight without external migrations.
     existing = client.execute(
         """
         SELECT name
@@ -151,6 +245,10 @@ def _ensure_fact_table(client: Client, settings: Settings, table_name: str) -> N
     existing_cols = {row[0] for row in existing}
     for name, dtype in CLICKHOUSE_SCHEMA:
         if name not in existing_cols:
+            # Add missing columns without rebuilding the table.
+            # DDL adds a column only when absent to stay idempotent.
+            # Column-level alters avoid heavy table rewrites.
+            # Keeps tables compatible with new analytics fields.
             client.execute(
                 f"ALTER TABLE {settings.clickhouse_database}.{table_name} "
                 f"ADD COLUMN IF NOT EXISTS {name} {dtype}"
@@ -159,14 +257,28 @@ def _ensure_fact_table(client: Client, settings: Settings, table_name: str) -> N
 
 @retry(stop=stop_after_attempt(20), wait=wait_fixed(2))
 def ensure_clickhouse_schema(client: Client, settings: Settings) -> None:
-    """Create and evolve ClickHouse tables required for ETL and analytics."""
-    
+    """Create and evolve ClickHouse tables required for ETL and analytics.
+
+    Business purpose:
+        Guarantee analytics storage is ready before queries or ETL writes occur.
+    Why it exists:
+        ClickHouse DDL must run at startup to avoid runtime failures.
+    Where used:
+        Application startup and provisioning scripts.
+    Inputs:
+        client: ClickHouse client for executing DDL.
+        settings: Runtime configuration containing database name.
+    Returns:
+        None; creates or alters ClickHouse schemas as needed.
+    """
     # ------------------------------------------------------------------
     # 1. Ensure the ClickHouse database exists
     # ------------------------------------------------------------------
     # This creates the logical database (schema) that will contain all
     # analytics-related tables. Using IF NOT EXISTS makes this operation
     # safe to run multiple times.
+    # DDL is idempotent to support repeated startup runs.
+    # CREATE DATABASE is lightweight and does not scan table data.
     client.execute(f"CREATE DATABASE IF NOT EXISTS {settings.clickhouse_database}")
 
     # ------------------------------------------------------------------
@@ -185,6 +297,9 @@ def ensure_clickhouse_schema(client: Client, settings: Settings) -> None:
     # It serves as an immutable audit log and allows reprocessing if ETL rules change.
     raw_cols = ",\n            ".join(f"{name} String" for name in RAW_COLUMNS)
     raw_table_name = raw_table(settings)
+    # DDL defines a MergeTree with time partitioning for ingestion-time pruning.
+    # Raw table stores strings to preserve source values for auditability.
+    # Order keys keep tenant/etl_run lookups efficient.
     client.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {raw_table_name} (
@@ -206,6 +321,9 @@ def ensure_clickhouse_schema(client: Client, settings: Settings) -> None:
     # Each row may contain multiple issues with different severities,
     # along with the original raw values that caused the failure.
     issues_table_name = issues_table(settings)
+    # DDL uses MergeTree with detected_at partitioning for time-bound queries.
+    # Order keys favor tenant + transaction lookups in the quality UI.
+    # IF NOT EXISTS keeps the DDL idempotent across deployments.
     client.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {issues_table_name} (

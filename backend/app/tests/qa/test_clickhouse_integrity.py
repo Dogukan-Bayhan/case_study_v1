@@ -22,13 +22,23 @@ CRITICAL_MAX_NULL_RATIO = float(os.getenv("QA_CRITICAL_MAX_NULL_RATIO", "0.05"))
 
 
 def test_clickhouse_fact_table_has_rows(clickhouse_client, clickhouse_fact_table):
-    """
-    Confirm that ClickHouse contains transaction data after ETL.
+    """Confirm ClickHouse contains transaction data after ETL.
 
-    Why: An empty fact table makes analytics endpoints and UI unusable.
-    Failure caught: ETL not executed, load failed, or accidental table truncation.
-    Expected: fact_transactions_clean has at least one row.
+    Business purpose:
+        Ensure analytics tables are populated for the UI and APIs.
+    Why it exists:
+        Detects empty loads or accidental truncation.
+    Where used:
+        QA test suite for ClickHouse integrity.
+    Inputs:
+        clickhouse_client: ClickHouse client for queries.
+        clickhouse_fact_table: Clean fact table name.
+    Returns:
+        None; asserts table has rows.
     """
+    # Query counts rows in the clean fact table.
+    # COUNT(*) is a lightweight aggregate and returns a single scalar.
+    # Used to fail fast if the table is empty after ETL.
     total_rows = clickhouse_client.execute(f"SELECT count() FROM {clickhouse_fact_table}")[0][0]
     assert total_rows > 0, "fact_transactions_clean is empty."
 
@@ -38,12 +48,20 @@ def test_clickhouse_null_ratios_for_critical_columns(
     clickhouse_fact_table,
     clickhouse_database,
 ):
-    """
-    Validate null/blank ratios for critical analytics columns in ClickHouse.
+    """Validate null/blank ratios for critical analytics columns in ClickHouse.
 
-    Why: Core metrics depend on dates and amounts; high NULL ratios indicate unusable data.
-    Failure caught: columns populated with NULLs/blanks due to failed parsing or mapping.
-    Expected: strict columns are fully populated; critical columns stay below QA_CRITICAL_MAX_NULL_RATIO.
+    Business purpose:
+        Ensure critical columns are populated for analytics readiness.
+    Why it exists:
+        Detects parsing or mapping failures that leave critical fields empty.
+    Where used:
+        QA test suite for ClickHouse integrity.
+    Inputs:
+        clickhouse_client: ClickHouse client for queries.
+        clickhouse_fact_table: Clean fact table name.
+        clickhouse_database: ClickHouse database name.
+    Returns:
+        None; asserts null ratios are within thresholds.
     """
     column_types = fetch_column_types(
         clickhouse_client,
@@ -67,6 +85,9 @@ def test_clickhouse_null_ratios_for_critical_columns(
         f"{CRITICAL_MAX_NULL_RATIO:.2f}: {ratio_failures}"
     )
 
+    # Query counts rows that are analytics-ready based on key fields.
+    # Aggregate check avoids fetching row-level data in tests.
+    # WHERE clause restricts scan to rows with required fields populated.
     ready_rows = clickhouse_client.execute(
         f"""
         SELECT count()
