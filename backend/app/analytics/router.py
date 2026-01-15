@@ -1,0 +1,190 @@
+"""
+Analytics API routes.
+
+This module exposes analytics-related HTTP endpoints under the `/analytics` prefix.
+
+Responsibilities of this layer:
+- Receive HTTP requests from the frontend
+- Enforce authentication and authorization
+- Apply tenant and role-based data scoping
+- Validate query parameters
+- Delegate heavy analytics logic to the service layer
+- Return structured, validated responses to the UI
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+# Whitelist of allowed columns that can be used in ORDER BY clauses
+# This prevents SQL injection and unsupported sorting
+from app.analytics.queries import TRANSACTION_SORTABLE
+
+from app.analytics.schemas import KPIs, TimeSeriesPoint, TopProduct, TransactionPage
+from app.analytics.service import get_kpis, get_timeseries, get_top_products, get_transactions
+from app.core.deps import get_clickhouse, get_current_user, get_settings
+from app.db.clickhouse import fact_table
+from app.db.models import RoleEnum, User
+
+router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+# ---------------------------------------------------------------------
+# KPI ENDPOINT
+# ---------------------------------------------------------------------
+@router.get("/kpis", response_model=KPIs)
+def kpis(
+    # The currently authenticated user (resolved from JWT / cookie)
+    current_user: User = Depends(get_current_user),
+    # ClickHouse client used for analytics queries
+    client=Depends(get_clickhouse),
+    # Application settings (used to resolve database/schema names)
+    settings=Depends(get_settings),
+) -> KPIs:
+    """
+    GET /analytics/kpis
+
+    Frontend request:
+        GET /analytics/kpis
+        Authorization: Bearer <JWT>
+
+    No query parameters are required.
+
+    Purpose:
+    - Return high-level KPI aggregates for the dashboard tiles
+    - Metrics include revenue, order count, average order value, and unique customers
+
+    Authorization & scoping:
+    - ADMIN / GUEST users see all data within their tenant
+    - NORMAL users see only their own transactions
+    """
+
+    # NORMAL users are restricted to their own data
+    # ADMIN and GUEST users can see all data for the tenant
+    owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    # Resolve the analytics fact table in ClickHouse
+    table = fact_table(settings)
+    # Delegate KPI aggregation to the analytics service layer
+    return get_kpis(client, table, current_user.tenant_id, owner_filter)
+
+
+# ---------------------------------------------------------------------
+# TIME SERIES ENDPOINT (Charts)
+# ---------------------------------------------------------------------
+@router.get("/timeseries", response_model=list[TimeSeriesPoint])
+def timeseries(
+
+    # Metric to aggregate (revenue, orders, customers)
+    metric: str = Query("revenue"),
+
+    # Time grain for grouping (day, week, month)
+    grain: str = Query("day"),
+    current_user: User = Depends(get_current_user),
+    client=Depends(get_clickhouse),
+    settings=Depends(get_settings),
+) -> list[TimeSeriesPoint]:
+    """
+    GET /analytics/timeseries
+
+    Frontend request examples:
+        GET /analytics/timeseries?metric=revenue&grain=day
+        GET /analytics/timeseries?metric=orders&grain=month
+
+    Purpose:
+    - Provide time-series data for charts (line / bar charts)
+    - Aggregates data over time based on the selected metric and grain
+
+    Authorization & scoping:
+    - ADMIN / GUEST users see tenant-wide time series
+    - NORMAL users see only their own activity
+    """
+
+    # Apply owner-level filtering only for NORMAL users
+    owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    table = fact_table(settings)
+    return get_timeseries(client, metric, grain, table, current_user.tenant_id, owner_filter)
+
+
+# ---------------------------------------------------------------------
+# TOP PRODUCTS ENDPOINT
+# ---------------------------------------------------------------------
+@router.get("/top-products", response_model=list[TopProduct])
+def top_products(
+    # Maximum number of products to return (bounded for safety)
+    limit: int = Query(10, ge=1, le=100),
+
+    current_user: User = Depends(get_current_user),
+    client=Depends(get_clickhouse),
+    settings=Depends(get_settings),
+) -> list[TopProduct]:
+    """
+    GET /analytics/top-products
+
+    Frontend request example:
+        GET /analytics/top-products?limit=10
+
+    Purpose:
+    - Return a ranked list of top products by revenue
+    - Used for leaderboard-style analytics or summary tables
+
+    Authorization & scoping:
+    - ADMIN / GUEST users see tenant-wide rankings
+    - NORMAL users see rankings based only on their own transactions
+    """
+    owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    table = fact_table(settings)
+    return get_top_products(client, table, current_user.tenant_id, owner_filter, limit)
+
+
+# ---------------------------------------------------------------------
+# TRANSACTIONS ENDPOINT (Paginated Table)
+# ---------------------------------------------------------------------
+@router.get("/transactions", response_model=TransactionPage)
+def transactions(
+    # Page number (1-based indexing)
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    pageSize: int | None = Query(None, ge=1, le=100),
+    sort_by: str = Query("order_date"),
+    sort_dir: str = Query("desc"),
+    current_user: User = Depends(get_current_user),
+    client=Depends(get_clickhouse),
+    settings=Depends(get_settings),
+) -> TransactionPage:
+    """
+    GET /analytics/transactions
+
+    Frontend request example:
+        GET /analytics/transactions?page=1&pageSize=25&sort_by=order_date&sort_dir=desc
+
+    Purpose:
+    - Return a paginated list of individual transactions
+    - Used to populate the main transactions table in the UI
+
+    Features:
+    - Server-side pagination
+    - Strict sort validation
+    - Role-based data visibility
+    """
+    if pageSize is not None:
+        page_size = pageSize
+
+    owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+
+    if current_user.role == RoleEnum.GUEST:
+        page_size = min(page_size, 25)
+
+    if sort_by not in TRANSACTION_SORTABLE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported sort column")
+    
+    if sort_dir.lower() not in {"asc", "desc"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported sort direction")
+    
+    table = fact_table(settings)
+    return get_transactions(
+        client,
+        table,
+        current_user.tenant_id,
+        owner_filter,
+        page,
+        page_size,
+        sort_by,
+        sort_dir,
+    )

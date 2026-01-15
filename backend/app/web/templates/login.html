@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-amber-900 text-slate-100">
+  <div class="max-w-md mx-auto px-6 py-16">
+    <div class="panel">
+      <p class="text-amber-300 uppercase tracking-[0.2em] text-xs mb-3">Multi-tenant analytics</p>
+      <h1 class="text-3xl font-bold mb-6">Sign in</h1>
+      {% if error %}
+        <p class="text-red-300 text-sm mb-4">{{ error }}</p>
+      {% endif %}
+      <form method="post" action="/login" class="space-y-4">
+        <div>
+          <label class="block text-xs uppercase tracking-[0.2em] text-slate-300 mb-2">Email</label>
+          <input name="email" type="email" required class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-4 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-amber-400" />
+        </div>
+        <div>
+          <label class="block text-xs uppercase tracking-[0.2em] text-slate-300 mb-2">Password</label>
+          <input name="password" type="password" required class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-4 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-amber-400" />
+        </div>
+        <button type="submit" class="w-full rounded-lg bg-amber-400 text-slate-900 font-semibold py-2">Login</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

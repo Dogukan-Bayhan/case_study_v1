@@ -1,0 +1,124 @@
+{% set currency_fields = ["unit_price", "total_amount"] %}
+{% set percent_fields = ["discount_percent", "tax_rate"] %}
+{% set integer_fields = ["quantity", "loyalty_points"] %}
+{% set rating_fields = ["rating"] %}
+
+<div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+  <div class="flex items-center gap-3 text-sm text-slate-300">
+    <span>Page {{ data.page }} of {{ total_pages }}</span>
+    <span class="text-slate-500">|</span>
+    <span>{{ data.total }} total rows</span>
+    <span id="transactions-loading" class="htmx-indicator text-amber-200 text-xs">Loading...</span>
+  </div>
+  <div class="flex items-center gap-2 text-sm">
+    <label for="page-size" class="text-slate-300">Rows</label>
+    <select
+      id="page-size"
+      name="page_size"
+      class="bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1 text-slate-100"
+      hx-get="/transactions/partial?page=1&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}"
+      hx-target="#transactions-table"
+      hx-swap="innerHTML"
+      hx-indicator="#transactions-loading"
+      hx-trigger="change"
+    >
+      {% for size in page_sizes %}
+        <option value="{{ size }}" {% if data.page_size == size %}selected{% endif %}>{{ size }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+
+<div class="mt-4 flex flex-wrap items-center gap-3 text-sm">
+  <button
+    class="nav-link disabled:opacity-40"
+    {% if prev_page %}
+      hx-get="/transactions/partial?page={{ prev_page }}&page_size={{ data.page_size }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}"
+      hx-target="#transactions-table"
+      hx-swap="innerHTML"
+      hx-indicator="#transactions-loading"
+    {% else %}
+      disabled
+    {% endif %}
+  >
+    Previous
+  </button>
+  <button
+    class="nav-link disabled:opacity-40"
+    {% if next_page %}
+      hx-get="/transactions/partial?page={{ next_page }}&page_size={{ data.page_size }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}"
+      hx-target="#transactions-table"
+      hx-swap="innerHTML"
+      hx-indicator="#transactions-loading"
+    {% else %}
+      disabled
+    {% endif %}
+  >
+    Next
+  </button>
+  <span class="text-slate-400">Use column headers to sort.</span>
+</div>
+
+<div class="mt-6 rounded-xl border border-slate-700/60 bg-slate-950/40 overflow-auto max-h-[65vh]">
+  <table class="min-w-[1400px] w-full text-sm text-slate-200">
+    <thead class="sticky top-0 bg-slate-900/90 backdrop-blur border-b border-slate-700">
+      <tr>
+        {% for column in columns %}
+          <th class="px-3 py-2 text-left font-semibold text-slate-200 whitespace-nowrap">
+            {% if column.sortable %}
+              {% set next_dir = "desc" if sort_by == column.key and sort_dir == "asc" else "asc" %}
+              <button
+                class="flex items-center gap-2 hover:text-amber-200"
+                hx-get="/transactions/partial?page=1&page_size={{ data.page_size }}&sort_by={{ column.key }}&sort_dir={{ next_dir }}"
+                hx-target="#transactions-table"
+                hx-swap="innerHTML"
+                hx-indicator="#transactions-loading"
+              >
+                <span>{{ column.label }}</span>
+                {% if sort_by == column.key %}
+                  <span class="text-amber-300">{{ "v" if sort_dir == "desc" else "^" }}</span>
+                {% endif %}
+              </button>
+            {% else %}
+              {{ column.label }}
+            {% endif %}
+          </th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800">
+      {% for row in data.rows %}
+        <tr class="hover:bg-slate-900/60">
+          {% for column in columns %}
+            <td class="px-3 py-2 whitespace-nowrap text-slate-300">
+              {% set value = row | attr(column.key) %}
+              {% if value is none %}
+                -
+              {% elif column.key == "order_date" %}
+                {{ value | replace("T", " ") }}
+              {% elif column.key == "is_returning_customer" %}
+                {{ "Yes" if value else "No" }}
+              {% elif column.key in currency_fields %}
+                ${{ "%.2f" | format(value) }}
+              {% elif column.key in percent_fields %}
+                {{ "%.2f" | format(value) }}%
+              {% elif column.key in integer_fields %}
+                {{ "%.0f" | format(value) }}
+              {% elif column.key in rating_fields %}
+                {{ "%.1f" | format(value) }}
+              {% else %}
+                {{ value }}
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+      {% else %}
+        <tr>
+          <td class="px-3 py-6 text-center text-slate-400" colspan="{{ columns | length }}">
+            No transactions found for the current filters.
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

@@ -1,0 +1,26 @@
+<div class="overflow-x-auto mt-4">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-slate-300">
+        <th class="py-2">Severity</th>
+        <th class="py-2">Check</th>
+        <th class="py-2">Column</th>
+        <th class="py-2">Message</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800">
+      {% for finding in findings %}
+        <tr>
+          <td class="py-2 capitalize">{{ finding.severity }}</td>
+          <td class="py-2">{{ finding.check }}</td>
+          <td class="py-2">{{ finding.column or "-" }}</td>
+          <td class="py-2">{{ finding.message }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="4" class="py-4 text-slate-400">No findings yet.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

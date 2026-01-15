@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% set title = "Analytics Dashboard" %}
+
+{% block content %}
+<section class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10">
+  <div class="card">
+    <p class="label">Revenue</p>
+    <p class="value">${{ "%.2f" | format(kpis.revenue) }}</p>
+  </div>
+  <div class="card">
+    <p class="label">Orders</p>
+    <p class="value">{{ kpis.orders }}</p>
+  </div>
+  <div class="card">
+    <p class="label">Avg Order</p>
+    <p class="value">${{ "%.2f" | format(kpis.avg_order_value) }}</p>
+  </div>
+  <div class="card">
+    <p class="label">Customers</p>
+    <p class="value">{{ kpis.unique_customers }}</p>
+  </div>
+</section>
+
+<section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <div class="panel">
+    <h2 class="panel-title">Revenue by Day</h2>
+    <div class="mt-4 space-y-2">
+      {% for point in series %}
+        <div class="flex items-center justify-between text-sm">
+          <span class="text-slate-300">{{ point.bucket }}</span>
+          <span class="font-semibold">${{ "%.2f" | format(point.value) }}</span>
+        </div>
+      {% else %}
+        <p class="text-slate-400">No data available. Run ETL to populate analytics.</p>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="panel">
+    <h2 class="panel-title">Top Products</h2>
+    <div class="mt-4 space-y-2">
+      {% for item in top_products %}
+        <div class="flex items-center justify-between text-sm">
+          <span class="text-slate-300">{{ item.product_id }}</span>
+          <span class="font-semibold">${{ "%.2f" | format(item.revenue) }}</span>
+        </div>
+      {% else %}
+        <p class="text-slate-400">No product data yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endblock %}

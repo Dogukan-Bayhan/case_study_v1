@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ title or "Analytics" }}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-amber-900 text-slate-100">
+  <div class="max-w-6xl mx-auto px-6 py-8">
+        <header class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
+          <div>
+            <p class="text-amber-300 uppercase tracking-[0.2em] text-xs">Multi-tenant analytics</p>
+            <h1 class="text-3xl md:text-4xl font-bold">{{ title or "Dashboard" }}</h1>
+          </div>
+          <nav class="flex gap-4 text-sm">
+            {% if user is defined %}
+              <a href="/" class="nav-link">Dashboard</a>
+              <a href="/quality" class="nav-link">Quality</a>
+              <a href="/transactions" class="nav-link">Transactions</a>
+              {% if user.role == "admin" %}
+                <a href="/admin" class="nav-link">Admin</a>
+              {% endif %}
+              <a href="/logout" class="nav-link">Logout</a>
+            {% else %}
+              <a href="/login" class="nav-link">Login</a>
+            {% endif %}
+          </nav>
+        </header>
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

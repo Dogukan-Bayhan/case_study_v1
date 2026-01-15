@@ -1,0 +1,495 @@
+{% extends "base.html" %}
+{% set title = "Data Quality" %}
+
+{% block content %}
+<section class="panel mb-6">
+  <h2 class="panel-title">Latest Report</h2>
+  {% if report and report.summary_json %}
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+      <div class="stat">
+        <p class="label">Rows</p>
+        <p class="value">{{ report.summary_json.total_rows }}</p>
+      </div>
+      <div class="stat">
+        <p class="label">Duplicates</p>
+        <p class="value">{{ report.summary_json.duplicates.count }}</p>
+      </div>
+      <div class="stat">
+        <p class="label">Category Issues</p>
+        <p class="value">{{ report.summary_json.category_inconsistencies.count }}</p>
+      </div>
+    </div>
+  {% else %}
+    <p class="text-slate-400 mt-4">No quality report yet. Run ETL to generate one.</p>
+  {% endif %}
+</section>
+
+<section class="panel" hx-get="/quality/partial" hx-trigger="load">
+  <h2 class="panel-title">Findings</h2>
+  <div class="mt-4" id="findings">
+    <p class="text-slate-400">Loading findings...</p>
+  </div>
+</section>
+
+<section class="panel mt-6" id="quality-overview">
+  <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+    <div>
+      <p class="label">Operational Quality</p>
+      <p class="text-sm text-slate-300">Live quality metrics from ClickHouse layers.</p>
+    </div>
+    <span id="overview-status" class="text-xs text-slate-400">Loading...</span>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
+    <div class="stat">
+      <p class="label">Total Transactions</p>
+      <p class="value" id="dq-total-raw">--</p>
+    </div>
+    <div class="stat">
+      <p class="label">Clean Transactions</p>
+      <p class="value" id="dq-total-clean">--</p>
+    </div>
+    <div class="stat">
+      <p class="label">Issue Transactions</p>
+      <p class="value" id="dq-total-issues">--</p>
+    </div>
+    <div class="stat">
+      <p class="label">% Clean</p>
+      <p class="value" id="dq-percent-clean">--</p>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+    <div class="card">
+      <p class="label">Clean vs Issues</p>
+      <div class="flex items-center gap-6 mt-4">
+        <div id="dq-donut" class="relative w-28 h-28 rounded-full bg-slate-800/80 flex items-center justify-center">
+          <span id="dq-donut-label" class="text-sm font-semibold">--%</span>
+        </div>
+        <div class="text-sm text-slate-300 space-y-2">
+          <div class="flex items-center gap-2">
+            <span class="badge badge-info">Clean</span>
+            <span id="dq-clean-count">--</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="badge badge-error">Issues</span>
+            <span id="dq-issue-count">--</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="label">Affected by Severity</p>
+      <div class="space-y-4 mt-4" id="dq-severity-bars">
+        <p class="text-sm text-slate-400">Loading severity breakdown...</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="label">Affected by Rule</p>
+      <div class="mt-4 max-h-56 overflow-auto">
+        <table class="w-full text-sm text-slate-200">
+          <thead class="text-xs uppercase text-slate-400 border-b border-slate-700">
+            <tr>
+              <th class="py-2 text-left">Rule</th>
+              <th class="py-2 text-right">Affected</th>
+              <th class="py-2 text-right">% Total</th>
+            </tr>
+          </thead>
+          <tbody id="dq-rule-table" class="divide-y divide-slate-800">
+            <tr>
+              <td colspan="3" class="py-4 text-center text-slate-400">Loading rule impact...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel mt-6" id="quality-issues">
+  <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+    <div>
+      <p class="label">Issues Explorer</p>
+      <p class="text-sm text-slate-300">Investigate problematic transactions with filters and drill-down.</p>
+    </div>
+    <span id="issues-status" class="text-xs text-slate-400">Loading...</span>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-6 mt-6">
+    <div>
+      <div class="flex flex-wrap items-end gap-3 text-sm">
+        <div class="flex flex-col gap-1">
+          <label class="text-slate-400" for="dq-severity-filter">Severity</label>
+          <select id="dq-severity-filter" class="bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1 text-slate-100">
+            <option value="">All</option>
+            <option value="error">Error</option>
+            <option value="warn">Warn</option>
+            <option value="info">Info</option>
+          </select>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-slate-400" for="dq-rule-filter">Rule Code</label>
+          <input id="dq-rule-filter" list="dq-rule-codes" class="bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1 text-slate-100" placeholder="MISSING_REQUIRED" />
+          <datalist id="dq-rule-codes">
+            <option value="MISSING_REQUIRED"></option>
+            <option value="PRICE_MISMATCH"></option>
+            <option value="DUPLICATE_TRANSACTION_ID"></option>
+            <option value="SUSPECTED_TYPO"></option>
+          </datalist>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-slate-400" for="dq-transaction-filter">Transaction ID</label>
+          <input id="dq-transaction-filter" class="bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1 text-slate-100" placeholder="TX-1001" />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-slate-400" for="dq-sort-by">Sort By</label>
+          <select id="dq-sort-by" class="bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1 text-slate-100">
+            <option value="detected_at">Detected At</option>
+            <option value="transaction_id">Transaction ID</option>
+          </select>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-slate-400" for="dq-sort-dir">Direction</label>
+          <select id="dq-sort-dir" class="bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1 text-slate-100">
+            <option value="desc">Desc</option>
+            <option value="asc">Asc</option>
+          </select>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-slate-400" for="dq-page-size">Rows</label>
+          <select id="dq-page-size" class="bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1 text-slate-100">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+        <button id="dq-apply-filters" class="nav-link text-sm">Apply</button>
+        <button id="dq-reset-filters" class="nav-link text-sm">Reset</button>
+      </div>
+
+      <div class="mt-4 rounded-xl border border-slate-700/60 bg-slate-950/40 overflow-auto max-h-[60vh]">
+        <table class="w-full text-sm text-slate-200">
+          <thead class="sticky top-0 bg-slate-900/90 backdrop-blur border-b border-slate-700">
+            <tr>
+              <th class="px-3 py-2 text-left font-semibold text-slate-200">Transaction ID</th>
+              <th class="px-3 py-2 text-left font-semibold text-slate-200">Issues</th>
+              <th class="px-3 py-2 text-left font-semibold text-slate-200">Severity</th>
+              <th class="px-3 py-2 text-left font-semibold text-slate-200">Detected At</th>
+            </tr>
+          </thead>
+          <tbody id="dq-issues-body" class="divide-y divide-slate-800">
+            <tr>
+              <td colspan="4" class="px-3 py-6 text-center text-slate-400">Loading issues...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="mt-4 flex items-center gap-3 text-sm text-slate-300">
+        <button id="dq-prev" class="nav-link disabled:opacity-40" disabled>Previous</button>
+        <button id="dq-next" class="nav-link disabled:opacity-40" disabled>Next</button>
+        <span id="dq-page-info" class="text-slate-400">Page 1</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="label">Issue Drill-Down</p>
+      <div id="dq-detail" class="mt-4 text-sm text-slate-300">
+        Select a transaction to inspect raw values and failed rules.
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  const overviewStatus = document.getElementById("overview-status");
+  const issuesStatus = document.getElementById("issues-status");
+  const dqState = {
+    page: 1,
+    pageSize: 50,
+    severity: "",
+    ruleCode: "",
+    transactionId: "",
+    sortBy: "detected_at",
+    sortDir: "desc",
+  };
+  const ruleDescriptions = {
+    MISSING_REQUIRED: "Required field missing in raw CSV.",
+    PRICE_MISMATCH: "Total amount does not match quantity, price, discount, and tax.",
+    DUPLICATE_TRANSACTION_ID: "Transaction ID appears more than once.",
+    SUSPECTED_TYPO: "City or country likely has a typo.",
+  };
+
+  function formatNumber(value) {
+    return new Intl.NumberFormat().format(value);
+  }
+
+  function setDonut(cleanCount, issueCount) {
+    const total = cleanCount + issueCount;
+    const percent = total === 0 ? 0 : Math.round((cleanCount / total) * 100);
+    const donut = document.getElementById("dq-donut");
+    const label = document.getElementById("dq-donut-label");
+    const cleanColor = "rgba(56, 189, 248, 0.9)";
+    const issueColor = "rgba(239, 68, 68, 0.9)";
+    donut.style.background = `conic-gradient(${cleanColor} ${percent}%, ${issueColor} 0)`;
+    label.textContent = `${percent}%`;
+  }
+
+  function renderSeverityBars(items, totalRaw) {
+    const container = document.getElementById("dq-severity-bars");
+    container.innerHTML = "";
+    const entries = [
+      { key: "error", label: "Error", className: "badge-error" },
+      { key: "warn", label: "Warn", className: "badge-warn" },
+      { key: "info", label: "Info", className: "badge-info" },
+    ];
+    const lookup = { error: { affected_tx: 0, affected_pct: 0 }, warn: { affected_tx: 0, affected_pct: 0 }, info: { affected_tx: 0, affected_pct: 0 } };
+    if (Array.isArray(items)) {
+      items.forEach((item) => {
+        if (!item || !item.severity) return;
+        lookup[item.severity] = {
+          affected_tx: item.affected_tx ?? 0,
+          affected_pct: item.affected_pct ?? 0,
+        };
+      });
+    } else if (items) {
+      Object.entries(items).forEach(([severity, count]) => {
+        lookup[severity] = {
+          affected_tx: Number(count) || 0,
+          affected_pct: totalRaw ? (Number(count) || 0) / totalRaw : 0,
+        };
+      });
+    }
+    const maxValue = Math.max(1, ...entries.map((item) => lookup[item.key].affected_tx || 0));
+    entries.forEach((item) => {
+      const value = lookup[item.key].affected_tx || 0;
+      const pct = lookup[item.key].affected_pct || 0;
+      const row = document.createElement("div");
+      row.className = "space-y-1";
+      row.innerHTML = `
+        <div class="flex items-center justify-between text-xs text-slate-400">
+          <span class="badge ${item.className}">${item.label}</span>
+          <span>${formatNumber(value)} (${Math.round(pct * 100)}%)</span>
+        </div>
+        <div class="h-2 rounded-full bg-slate-800">
+          <div class="h-2 rounded-full ${item.className}" style="width: ${(value / maxValue) * 100}%"></div>
+        </div>
+      `;
+      container.appendChild(row);
+    });
+  }
+
+  function renderRuleTable(byRule, totalRaw) {
+    const body = document.getElementById("dq-rule-table");
+    body.innerHTML = "";
+    if (!byRule.length) {
+      body.innerHTML = '<tr><td colspan="3" class="py-4 text-center text-slate-400">No affected transactions yet.</td></tr>';
+      return;
+    }
+    byRule.forEach((row) => {
+      const affected = row.affected_tx ?? row.count ?? 0;
+      const pct = row.affected_pct ?? (totalRaw ? affected / totalRaw : 0);
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="py-2 pr-2 text-slate-300">${row.rule || row.rule_code}</td>
+        <td class="py-2 text-right text-slate-200">${formatNumber(affected)}</td>
+        <td class="py-2 text-right text-slate-400">${Math.round(pct * 100)}%</td>
+      `;
+      body.appendChild(tr);
+    });
+  }
+
+  async function loadOverview() {
+    overviewStatus.textContent = "Loading...";
+    try {
+      const response = await fetch("/quality/overview");
+      if (!response.ok) {
+        throw new Error("Failed to load overview");
+      }
+      const data = await response.json();
+      const totalRaw = data.total_raw_tx ?? data.total_raw_rows ?? 0;
+      const cleanTx = data.clean_tx ?? data.total_clean_rows ?? 0;
+      const issueTx = data.issue_tx ?? data.total_issue_rows ?? 0;
+      const percentCleanValue = data.pct_clean ?? (totalRaw === 0 ? 0 : cleanTx / totalRaw);
+      document.getElementById("dq-total-raw").textContent = formatNumber(totalRaw);
+      document.getElementById("dq-total-clean").textContent = formatNumber(cleanTx);
+      document.getElementById("dq-total-issues").textContent = formatNumber(issueTx);
+      const percentClean = Math.round(percentCleanValue * 100);
+      document.getElementById("dq-percent-clean").textContent = `${percentClean}%`;
+      document.getElementById("dq-clean-count").textContent = formatNumber(cleanTx);
+      document.getElementById("dq-issue-count").textContent = formatNumber(issueTx);
+      setDonut(cleanTx, issueTx);
+      renderSeverityBars(data.issues_by_severity || data.by_severity || {}, totalRaw);
+      renderRuleTable(data.issues_by_rule || data.by_rule || [], totalRaw);
+      overviewStatus.textContent = `Updated ${new Date(data.as_of).toLocaleString()}`;
+    } catch (err) {
+      overviewStatus.textContent = "Failed to load overview";
+    }
+  }
+
+  function buildIssuesUrl() {
+    const params = new URLSearchParams({
+      page: dqState.page,
+      page_size: dqState.pageSize,
+      sort_by: dqState.sortBy,
+      sort_dir: dqState.sortDir,
+    });
+    if (dqState.severity) params.set("severity", dqState.severity);
+    if (dqState.ruleCode) params.set("rule_code", dqState.ruleCode);
+    if (dqState.transactionId) params.set("transaction_id", dqState.transactionId);
+    return `/quality/issues?${params.toString()}`;
+  }
+
+  function renderIssuesTable(items) {
+    const body = document.getElementById("dq-issues-body");
+    body.innerHTML = "";
+    if (!items.length) {
+      body.innerHTML = '<tr><td colspan="4" class="px-3 py-6 text-center text-slate-400">No issues found.</td></tr>';
+      return;
+    }
+    items.forEach((item) => {
+      const tr = document.createElement("tr");
+      tr.className = "hover:bg-slate-900/60 cursor-pointer";
+      tr.dataset.transactionId = item.transaction_id;
+
+      const issuesCell = item.issues.map((issue) => `<span class="badge badge-warn">${issue}</span>`).join(" ");
+      const severityCell = item.severity.map((severity) => {
+        const className = severity === "error" ? "badge-error" : severity === "warn" ? "badge-warn" : "badge-info";
+        return `<span class="badge ${className}">${severity}</span>`;
+      }).join(" ");
+
+      tr.innerHTML = `
+        <td class="px-3 py-3 text-slate-200">${item.transaction_id}</td>
+        <td class="px-3 py-3">${issuesCell}</td>
+        <td class="px-3 py-3">${severityCell}</td>
+        <td class="px-3 py-3 text-slate-300">${item.detected_at.replace("T", " ")}</td>
+      `;
+      tr.addEventListener("click", () => loadIssueDetail(item.transaction_id));
+      body.appendChild(tr);
+    });
+  }
+
+  function updatePagination(total) {
+    const pageInfo = document.getElementById("dq-page-info");
+    const totalPages = Math.max(1, Math.ceil(total / dqState.pageSize));
+    pageInfo.textContent = `Page ${dqState.page} of ${totalPages} (${formatNumber(total)} rows)`;
+    const prevBtn = document.getElementById("dq-prev");
+    const nextBtn = document.getElementById("dq-next");
+    prevBtn.disabled = dqState.page <= 1;
+    nextBtn.disabled = dqState.page >= totalPages;
+    prevBtn.onclick = () => loadIssues(dqState.page - 1);
+    nextBtn.onclick = () => loadIssues(dqState.page + 1);
+  }
+
+  async function loadIssues(page) {
+    dqState.page = page;
+    issuesStatus.textContent = "Loading...";
+    try {
+      const response = await fetch(buildIssuesUrl());
+      if (!response.ok) {
+        throw new Error("Failed to load issues");
+      }
+      const data = await response.json();
+      renderIssuesTable(data.items || []);
+      updatePagination(data.total || 0);
+      issuesStatus.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    } catch (err) {
+      issuesStatus.textContent = "Failed to load issues";
+      document.getElementById("dq-issues-body").innerHTML =
+        '<tr><td colspan="4" class="px-3 py-6 text-center text-slate-400">Failed to load issues.</td></tr>';
+    }
+  }
+
+  async function loadIssueDetail(transactionId) {
+    const detail = document.getElementById("dq-detail");
+    detail.textContent = "Loading details...";
+    try {
+      const response = await fetch(`/quality/issues/${encodeURIComponent(transactionId)}`);
+      if (!response.ok) {
+        throw new Error("Failed to load detail");
+      }
+      const data = await response.json();
+      const issuesList = data.issues.map((issue, idx) => {
+        const severity = data.severity[idx] || "info";
+        const className = severity === "error" ? "badge-error" : severity === "warn" ? "badge-warn" : "badge-info";
+        const description = ruleDescriptions[issue] || "Rule triggered.";
+        return `
+          <div class="mb-3">
+            <div class="flex items-center gap-2">
+              <span class="badge ${className}">${severity}</span>
+              <span class="text-slate-200">${issue}</span>
+            </div>
+            <p class="text-xs text-slate-400 mt-1">${description}</p>
+          </div>
+        `;
+      }).join("");
+
+      const rawEntries = Object.entries(data.raw_columns || {});
+      const rawRows = rawEntries.length
+        ? rawEntries.map(([key, value]) => `
+            <tr class="border-b border-slate-800">
+              <td class="py-2 pr-3 text-slate-400">${key}</td>
+              <td class="py-2 text-slate-200">${value ?? ""}</td>
+            </tr>
+          `).join("")
+        : '<tr><td colspan="2" class="py-4 text-slate-400 text-center">No raw values.</td></tr>';
+
+      detail.innerHTML = `
+        <div class="mb-4">
+          <p class="text-xs text-slate-400">Transaction</p>
+          <p class="text-lg font-semibold text-slate-100">${data.transaction_id}</p>
+          <p class="text-xs text-slate-400 mt-1">Detected at ${data.detected_at.replace("T", " ")}</p>
+        </div>
+        <div class="mb-6">
+          <p class="label">Failed Rules</p>
+          <div class="mt-2">${issuesList || '<p class="text-slate-400">No issues listed.</p>'}</div>
+        </div>
+        <div>
+          <p class="label">Raw Values</p>
+          <div class="mt-2 max-h-72 overflow-auto rounded-lg border border-slate-800">
+            <table class="w-full text-xs">
+              <tbody>${rawRows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    } catch (err) {
+      detail.textContent = "Failed to load transaction detail.";
+    }
+  }
+
+  function bindFilters() {
+    document.getElementById("dq-apply-filters").addEventListener("click", () => {
+      dqState.severity = document.getElementById("dq-severity-filter").value;
+      dqState.ruleCode = document.getElementById("dq-rule-filter").value.trim();
+      dqState.transactionId = document.getElementById("dq-transaction-filter").value.trim();
+      dqState.sortBy = document.getElementById("dq-sort-by").value;
+      dqState.sortDir = document.getElementById("dq-sort-dir").value;
+      dqState.pageSize = Number(document.getElementById("dq-page-size").value);
+      loadIssues(1);
+    });
+
+    document.getElementById("dq-reset-filters").addEventListener("click", () => {
+      document.getElementById("dq-severity-filter").value = "";
+      document.getElementById("dq-rule-filter").value = "";
+      document.getElementById("dq-transaction-filter").value = "";
+      document.getElementById("dq-sort-by").value = "detected_at";
+      document.getElementById("dq-sort-dir").value = "desc";
+      document.getElementById("dq-page-size").value = "50";
+      dqState.severity = "";
+      dqState.ruleCode = "";
+      dqState.transactionId = "";
+      dqState.sortBy = "detected_at";
+      dqState.sortDir = "desc";
+      dqState.pageSize = 50;
+      loadIssues(1);
+    });
+  }
+
+  bindFilters();
+  loadOverview();
+  loadIssues(1);
+</script>
+{% endblock %}
