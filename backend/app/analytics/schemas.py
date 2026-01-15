@@ -98,3 +98,39 @@ class TransactionPage(CamelModel):
     page_size: int
     total: int
     rows: list[TransactionRow]
+
+
+class AdHocRequest(BaseModel):
+    """Payload for ad-hoc analytics requests."""
+    scope: str = "clean"
+    metrics: list[str]
+    dimensions: list[str]
+    filters: dict[str, object] | None = None
+    limit: int = 100
+    offset: int = 0
+    sort_by: str | None = None
+    sort_dir: str = "desc"
+    date_grain: str | None = None
+
+
+class AdHocColumn(CamelModel):
+    """Column metadata for ad-hoc result tables."""
+    key: str
+    label: str
+    role: str
+    format: str | None = None
+
+
+class AdHocResponse(CamelModel):
+    """Ad-hoc analytics response payload."""
+    scope: str
+    metrics: list[str]
+    dimensions: list[str]
+    date_grain: str | None
+    columns: list[AdHocColumn]
+    rows: list[dict[str, object]]
+    limit: int
+    offset: int
+    has_more: bool
+    sort_by: str
+    sort_dir: str

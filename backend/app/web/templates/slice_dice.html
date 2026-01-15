@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% set title = "Slice & Dice Studio" %}
+{% block content %}
+<section class="grid grid-cols-1 xl:grid-cols-[360px_1fr] gap-6" id="slice-dice">
+  <aside class="panel builder-panel">
+    <div>
+      <p class="label">Analytics Builder</p>
+      <p class="text-sm text-slate-300 mt-2">Build fast, safe ad-hoc analytics with curated metrics and dimensions.</p>
+    </div>
+
+    <div class="builder-section mt-6">
+      <div class="builder-header">
+        <h3>Scope</h3>
+        <span class="builder-meta">Environment</span>
+      </div>
+      {% set scope_locked = user.role == "normal" %}
+      <div class="segmented segmented-lg mt-3" role="group" aria-label="Analytics scope selector">
+        <button class="segment" data-scope="all" {% if scope_locked %}disabled{% endif %}>All</button>
+        <button class="segment is-active" data-scope="clean">Clean</button>
+        <button class="segment" data-scope="issues" {% if scope_locked %}disabled{% endif %}>Issues</button>
+      </div>
+      {% if scope_locked %}
+        <p class="text-xs text-slate-400 mt-2">Scope locked to clean data for role-based visibility.</p>
+      {% endif %}
+    </div>
+
+    <div class="builder-section mt-6">
+      <div class="builder-header">
+        <h3>Metrics</h3>
+        <span class="builder-meta" id="metric-count">0 selected</span>
+      </div>
+      <div class="check-grid mt-3" id="metric-list">
+        <label class="check-item">
+          <input type="checkbox" data-metric value="revenue" />
+          <span>Total Revenue</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-metric value="orders" />
+          <span>Orders</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-metric value="avg_order" />
+          <span>Average Order Value</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-metric value="avg_discount" />
+          <span>Average Discount</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-metric value="avg_rating" />
+          <span>Average Rating</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-metric value="returning_rate" />
+          <span>Returning Customer Rate</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="builder-section mt-6">
+      <div class="builder-header">
+        <h3>Dimensions</h3>
+        <span class="builder-meta" id="dimension-count">0 / 3</span>
+      </div>
+      <p class="text-xs text-slate-400 mt-2">Select up to three dimensions.</p>
+      <div class="check-grid mt-3" id="dimension-list">
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="country" />
+          <span>Country</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="city" />
+          <span>City</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="category" />
+          <span>Category</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="department" />
+          <span>Department</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="product_name" />
+          <span>Product Name</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="product_code" />
+          <span>Product Code</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="payment_method" />
+          <span>Payment Method</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="tier" />
+          <span>Tier</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="sales_rep_id" />
+          <span>Sales Rep ID</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="region_code" />
+          <span>Region Code</span>
+        </label>
+        <label class="check-item">
+          <input type="checkbox" data-dimension value="order_date" />
+          <span>Order Date</span>
+        </label>
+      </div>
+      <p class="text-xs text-amber-200 mt-3 hidden" id="dimension-warning">Maximum of three dimensions reached.</p>
+      <div class="builder-subsection mt-4" id="date-grain-block">
+        <p class="text-xs uppercase tracking-[0.2em] text-slate-400">Order Date Grain</p>
+        <div class="segmented segmented-sm mt-2" role="group" aria-label="Order date granularity">
+          <button class="segment is-active" data-grain="day">Day</button>
+          <button class="segment" data-grain="week">Week</button>
+          <button class="segment" data-grain="month">Month</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="builder-section mt-6" id="builder-filters">
+      <div class="builder-header">
+        <h3>Filters</h3>
+        <span class="builder-meta">Optional</span>
+      </div>
+      <div class="filter-grid mt-4">
+        <div class="filter-field">
+          <label for="filter-country">Country</label>
+          <input id="filter-country" data-field="country" list="options-country" placeholder="United States" />
+          <datalist id="options-country"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-city">City</label>
+          <input id="filter-city" data-field="city" list="options-city" placeholder="New York" />
+          <datalist id="options-city"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-category">Category</label>
+          <input id="filter-category" data-field="category" list="options-category" placeholder="apparel" />
+          <datalist id="options-category"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-department">Department</label>
+          <input id="filter-department" data-field="department" list="options-department" placeholder="Retail Ops" />
+          <datalist id="options-department"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-payment">Payment Method</label>
+          <input id="filter-payment" data-field="payment_method" list="options-payment_method" placeholder="Credit Card" />
+          <datalist id="options-payment_method"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-tier">Tier</label>
+          <input id="filter-tier" data-field="tier" list="options-tier" placeholder="gold" />
+          <datalist id="options-tier"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-returning">Returning Customer</label>
+          <select id="filter-returning" data-field="is_returning_customer">
+            <option value="">All</option>
+            <option value="1">Returning</option>
+            <option value="0">New</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Rating</label>
+          <div class="range-inputs">
+            <input type="number" step="0.1" min="0" max="5" data-field="rating_min" placeholder="Min" />
+            <input type="number" step="0.1" min="0" max="5" data-field="rating_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Quantity</label>
+          <div class="range-inputs">
+            <input type="number" step="1" min="0" data-field="quantity_min" placeholder="Min" />
+            <input type="number" step="1" min="0" data-field="quantity_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Unit Price</label>
+          <div class="range-inputs">
+            <input type="number" step="0.01" min="0" data-field="unit_price_min" placeholder="Min" />
+            <input type="number" step="0.01" min="0" data-field="unit_price_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Discount %</label>
+          <div class="range-inputs">
+            <input type="number" step="0.01" min="0" data-field="discount_percent_min" placeholder="Min" />
+            <input type="number" step="0.01" min="0" data-field="discount_percent_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Tax Rate</label>
+          <div class="range-inputs">
+            <input type="number" step="0.01" min="0" data-field="tax_rate_min" placeholder="Min" />
+            <input type="number" step="0.01" min="0" data-field="tax_rate_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Total Amount</label>
+          <div class="range-inputs">
+            <input type="number" step="0.01" min="0" data-field="total_amount_min" placeholder="Min" />
+            <input type="number" step="0.01" min="0" data-field="total_amount_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Order Date</label>
+          <div class="range-inputs">
+            <input type="date" data-field="order_date_start" />
+            <input type="date" data-field="order_date_end" />
+          </div>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 mt-5">
+        <button id="filters-apply" class="nav-link">Apply</button>
+        <button id="filters-reset" class="nav-link">Reset</button>
+      </div>
+      <div id="active-filters" class="mt-4 flex flex-wrap gap-2"></div>
+    </div>
+
+    <div class="builder-section mt-6">
+      <button id="run-analysis" class="primary-btn w-full" disabled>Run Analysis</button>
+      <p class="text-xs text-slate-400 mt-3" id="analysis-status">Select at least one metric and one dimension.</p>
+    </div>
+  </aside>
+
+  <div class="space-y-6">
+    <section class="panel">
+      <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+        <div>
+          <p class="label">Results</p>
+          <h2 class="text-xl font-semibold">Ad-hoc Output</h2>
+          <p class="text-sm text-slate-300 mt-1" id="results-subtitle">Ready to run analysis.</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="filter-field">
+            <label for="result-limit">Rows</label>
+            <select id="result-limit">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+          </div>
+          <button id="export-csv" class="nav-link">Export CSV</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+        <div>
+          <h3 class="panel-title">Auto Chart</h3>
+          <p class="text-xs text-slate-400" id="chart-hint">Charts adapt to your selected dimensions.</p>
+        </div>
+        <span id="chart-warning" class="warning-pill hidden"></span>
+      </div>
+      <div id="chart-container" class="chart-frame mt-4">
+        <div class="empty-state">Run analysis to render charts.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+        <h3 class="panel-title">Results Table</h3>
+        <span class="text-xs text-slate-400" id="table-status">Awaiting results.</span>
+      </div>
+      <div class="table-wrapper mt-4" id="results-table">
+        <div class="empty-state">Select metrics and dimensions, then run analysis.</div>
+      </div>
+      <div class="flex items-center gap-3 mt-4 text-sm text-slate-300">
+        <button id="page-prev" class="nav-link disabled:opacity-40" disabled>Previous</button>
+        <button id="page-next" class="nav-link disabled:opacity-40" disabled>Next</button>
+        <span id="page-info" class="text-slate-400">Page 1</span>
+      </div>
+    </section>
+  </div>
+</section>
+
+<script src="/static/slice_dice.js"></script>
+{% endblock %}

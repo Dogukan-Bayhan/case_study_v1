@@ -119,6 +119,21 @@ def dashboard(
     )
 
 
+@router.get("/slice-dice")
+def slice_dice_page(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Render the Slice & Dice Studio page."""
+    return templates.TemplateResponse(
+        "slice_dice.html",
+        {
+            "request": request,
+            "user": current_user,
+        },
+    )
+
+
 @router.get("/quality")
 def quality_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the quality page shell with the latest report."""

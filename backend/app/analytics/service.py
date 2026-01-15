@@ -1,7 +1,10 @@
 """Analytics query services."""
 
 from app.analytics.queries import (
+    AD_HOC_DIMENSIONS,
+    AD_HOC_METRICS,
     TRANSACTION_COLUMNS,
+    build_ad_hoc_query,
     build_breakdown_query,
     build_top_products_query,
     build_where_clause,
@@ -10,6 +13,8 @@ from app.analytics.queries import (
     build_transactions_query,
 )
 from app.analytics.schemas import (
+    AdHocColumn,
+    AdHocResponse,
     BreakdownRow,
     CustomerSegment,
     KPIs,
@@ -222,3 +227,89 @@ def get_transactions(
         results.append(TransactionRow(**record))
 
     return TransactionPage(page=page, page_size=page_size, total=total, rows=results)
+
+
+def get_ad_hoc_results(
+    client,
+    table_name: str,
+    tenant_id: int,
+    owner_user_id: int | None,
+    scope: str,
+    metrics: list[str],
+    dimensions: list[str],
+    date_grain: str | None,
+    filters: dict[str, object] | None,
+    limit: int,
+    offset: int,
+    sort_by: str | None,
+    sort_dir: str,
+) -> AdHocResponse:
+    """Run a single grouped query for ad-hoc analytics."""
+    query, params, select_keys = build_ad_hoc_query(
+        tenant_id,
+        owner_user_id,
+        table_name,
+        metrics,
+        dimensions,
+        date_grain,
+        filters,
+        sort_by,
+        sort_dir,
+        limit + 1,
+        offset,
+    )
+    rows = client.execute(query, params)
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    metric_keys = set(metrics)
+    results = []
+    for row in rows:
+        record = {}
+        for key, value in zip(select_keys, row):
+            if key == "order_date":
+                record[key] = value.isoformat() if value else None
+            elif key in metric_keys:
+                record[key] = float(value or 0)
+            else:
+                record[key] = str(value) if value is not None else "Unknown"
+        results.append(record)
+
+    columns: list[AdHocColumn] = []
+    for dimension in dimensions:
+        dim_key = "order_date" if dimension == "order_date" else dimension
+        columns.append(
+            AdHocColumn(
+                key=dim_key,
+                label=AD_HOC_DIMENSIONS[dimension]["label"],
+                role="dimension",
+                format="date" if dimension == "order_date" else "text",
+            )
+        )
+    for metric in metrics:
+        columns.append(
+            AdHocColumn(
+                key=metric,
+                label=AD_HOC_METRICS[metric]["label"],
+                role="metric",
+                format=AD_HOC_METRICS[metric]["format"],
+            )
+        )
+
+    resolved_sort = sort_by or metrics[0]
+    if resolved_sort not in select_keys:
+        resolved_sort = metrics[0]
+
+    return AdHocResponse(
+        scope=scope,
+        metrics=metrics,
+        dimensions=dimensions,
+        date_grain=date_grain,
+        columns=columns,
+        rows=results,
+        limit=limit,
+        offset=offset,
+        has_more=has_more,
+        sort_by=resolved_sort,
+        sort_dir=sort_dir.lower(),
+    )

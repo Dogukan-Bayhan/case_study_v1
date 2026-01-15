@@ -19,6 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from app.analytics.queries import TRANSACTION_SORTABLE, build_where_clause
 from app.analytics.filters import FILTER_OPTION_FIELDS, parse_filters
 from app.analytics.schemas import (
+    AdHocRequest,
+    AdHocResponse,
     BreakdownRow,
     CustomerSegment,
     FilterOption,
@@ -28,6 +30,7 @@ from app.analytics.schemas import (
     TransactionPage,
 )
 from app.analytics.service import (
+    get_ad_hoc_results,
     get_breakdown,
     get_customer_segments,
     get_kpis,
@@ -304,3 +307,43 @@ def transactions(
         search,
         search_mode,
     )
+
+
+# ---------------------------------------------------------------------
+# AD-HOC ANALYTICS ENDPOINT (Slice & Dice Studio)
+# ---------------------------------------------------------------------
+@router.post("/ad-hoc", response_model=AdHocResponse)
+def ad_hoc(
+    payload: AdHocRequest,
+    current_user: User = Depends(get_current_user),
+    client=Depends(get_clickhouse),
+    settings=Depends(get_settings),
+) -> AdHocResponse:
+    scope = _resolve_scope(payload.scope, current_user)
+    owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+
+    limit = max(1, min(payload.limit, 500))
+    offset = max(0, payload.offset)
+    sort_dir = payload.sort_dir.lower()
+    if sort_dir not in {"asc", "desc"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported sort direction")
+
+    table = build_scope_table(settings, scope)
+    try:
+        return get_ad_hoc_results(
+            client,
+            table,
+            current_user.tenant_id,
+            owner_filter,
+            scope,
+            payload.metrics,
+            payload.dimensions,
+            payload.date_grain or "day",
+            payload.filters,
+            limit,
+            offset,
+            payload.sort_by,
+            sort_dir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

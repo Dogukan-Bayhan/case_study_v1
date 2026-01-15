@@ -19,6 +19,7 @@
           <nav class="flex gap-4 text-sm">
             {% if user is defined %}
               <a href="/" class="nav-link">Dashboard</a>
+              <a href="/slice-dice" class="nav-link">Slice &amp; Dice</a>
               <a href="/quality" class="nav-link">Quality</a>
               <a href="/transactions" class="nav-link">Transactions</a>
               {% if user.role == "admin" %}
