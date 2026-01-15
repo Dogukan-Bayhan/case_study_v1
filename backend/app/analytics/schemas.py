@@ -34,8 +34,32 @@ class TimeSeriesPoint(BaseModel):
 
 class TopProduct(BaseModel):
     """Top product record in aggregate analytics."""
-    product_id: str
+    product: str
+    metric: str
+    value: float
+
+
+class BreakdownRow(BaseModel):
+    """Aggregated breakdown row for a grouping dimension."""
+    key: str
     revenue: float
+    orders: int
+    avg_order_value: float
+    quantity: float
+
+
+class CustomerSegment(BaseModel):
+    """Aggregate metrics for a customer segment."""
+    segment: str
+    customers: int
+    orders: int
+    revenue: float
+    avg_order_value: float
+
+
+class FilterOption(BaseModel):
+    """Autocomplete value for filter fields."""
+    value: str
 
 
 class TransactionRow(CamelModel):

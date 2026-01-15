@@ -12,19 +12,47 @@ Responsibilities of this layer:
 - Return structured, validated responses to the UI
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 # Whitelist of allowed columns that can be used in ORDER BY clauses
 # This prevents SQL injection and unsupported sorting
-from app.analytics.queries import TRANSACTION_SORTABLE
-
-from app.analytics.schemas import KPIs, TimeSeriesPoint, TopProduct, TransactionPage
-from app.analytics.service import get_kpis, get_timeseries, get_top_products, get_transactions
+from app.analytics.queries import TRANSACTION_SORTABLE, build_where_clause
+from app.analytics.filters import FILTER_OPTION_FIELDS, parse_filters
+from app.analytics.schemas import (
+    BreakdownRow,
+    CustomerSegment,
+    FilterOption,
+    KPIs,
+    TimeSeriesPoint,
+    TopProduct,
+    TransactionPage,
+)
+from app.analytics.service import (
+    get_breakdown,
+    get_customer_segments,
+    get_kpis,
+    get_timeseries,
+    get_top_products,
+    get_transactions,
+)
+from app.analytics.tables import SCOPE_VALUES, build_scope_table
 from app.core.deps import get_clickhouse, get_current_user, get_settings
-from app.db.clickhouse import fact_table
 from app.db.models import RoleEnum, User
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+
+def _resolve_scope(scope: str, current_user: User) -> str:
+    normalized = scope.lower()
+    if normalized not in SCOPE_VALUES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported scope")
+    if current_user.role == RoleEnum.NORMAL and normalized != "clean":
+        return "clean"
+    return normalized
+
+
+def _parse_filters(request: Request) -> dict[str, object]:
+    return parse_filters(request.query_params)
 
 # ---------------------------------------------------------------------
 # KPI ENDPOINT
@@ -32,11 +60,13 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 @router.get("/kpis", response_model=KPIs)
 def kpis(
     # The currently authenticated user (resolved from JWT / cookie)
+    scope: str = Query("clean"),
     current_user: User = Depends(get_current_user),
     # ClickHouse client used for analytics queries
     client=Depends(get_clickhouse),
     # Application settings (used to resolve database/schema names)
     settings=Depends(get_settings),
+    filters: dict[str, object] = Depends(_parse_filters),
 ) -> KPIs:
     """
     GET /analytics/kpis
@@ -60,9 +90,9 @@ def kpis(
     # ADMIN and GUEST users can see all data for the tenant
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
     # Resolve the analytics fact table in ClickHouse
-    table = fact_table(settings)
+    table = build_scope_table(settings, _resolve_scope(scope, current_user))
     # Delegate KPI aggregation to the analytics service layer
-    return get_kpis(client, table, current_user.tenant_id, owner_filter)
+    return get_kpis(client, table, current_user.tenant_id, owner_filter, filters)
 
 
 # ---------------------------------------------------------------------
@@ -76,9 +106,11 @@ def timeseries(
 
     # Time grain for grouping (day, week, month)
     grain: str = Query("day"),
+    scope: str = Query("clean"),
     current_user: User = Depends(get_current_user),
     client=Depends(get_clickhouse),
     settings=Depends(get_settings),
+    filters: dict[str, object] = Depends(_parse_filters),
 ) -> list[TimeSeriesPoint]:
     """
     GET /analytics/timeseries
@@ -98,8 +130,8 @@ def timeseries(
 
     # Apply owner-level filtering only for NORMAL users
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
-    table = fact_table(settings)
-    return get_timeseries(client, metric, grain, table, current_user.tenant_id, owner_filter)
+    table = build_scope_table(settings, _resolve_scope(scope, current_user))
+    return get_timeseries(client, metric, grain, table, current_user.tenant_id, owner_filter, filters)
 
 
 # ---------------------------------------------------------------------
@@ -109,10 +141,13 @@ def timeseries(
 def top_products(
     # Maximum number of products to return (bounded for safety)
     limit: int = Query(10, ge=1, le=100),
+    metric: str = Query("revenue"),
+    scope: str = Query("clean"),
 
     current_user: User = Depends(get_current_user),
     client=Depends(get_clickhouse),
     settings=Depends(get_settings),
+    filters: dict[str, object] = Depends(_parse_filters),
 ) -> list[TopProduct]:
     """
     GET /analytics/top-products
@@ -129,8 +164,80 @@ def top_products(
     - NORMAL users see rankings based only on their own transactions
     """
     owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
-    table = fact_table(settings)
-    return get_top_products(client, table, current_user.tenant_id, owner_filter, limit)
+    table = build_scope_table(settings, _resolve_scope(scope, current_user))
+    return get_top_products(client, table, current_user.tenant_id, owner_filter, limit, metric, filters)
+
+
+# ---------------------------------------------------------------------
+# BREAKDOWN ENDPOINT (aggregated rollups)
+# ---------------------------------------------------------------------
+@router.get("/breakdown", response_model=list[BreakdownRow])
+def breakdown(
+    dimension: str = Query(...),
+    limit: int = Query(12, ge=1, le=50),
+    scope: str = Query("clean"),
+    current_user: User = Depends(get_current_user),
+    client=Depends(get_clickhouse),
+    settings=Depends(get_settings),
+    filters: dict[str, object] = Depends(_parse_filters),
+) -> list[BreakdownRow]:
+    owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    table = build_scope_table(settings, _resolve_scope(scope, current_user))
+    return get_breakdown(client, table, current_user.tenant_id, owner_filter, dimension, limit, filters)
+
+
+# ---------------------------------------------------------------------
+# CUSTOMER SEGMENTS ENDPOINT
+# ---------------------------------------------------------------------
+@router.get("/customer-segments", response_model=list[CustomerSegment])
+def customer_segments(
+    scope: str = Query("clean"),
+    current_user: User = Depends(get_current_user),
+    client=Depends(get_clickhouse),
+    settings=Depends(get_settings),
+    filters: dict[str, object] = Depends(_parse_filters),
+) -> list[CustomerSegment]:
+    owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    table = build_scope_table(settings, _resolve_scope(scope, current_user))
+    return get_customer_segments(client, table, current_user.tenant_id, owner_filter, filters)
+
+
+# ---------------------------------------------------------------------
+# FILTER OPTIONS ENDPOINT
+# ---------------------------------------------------------------------
+@router.get("/filter-options", response_model=list[FilterOption])
+def filter_options(
+    field: str = Query(...),
+    q: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    scope: str = Query("clean"),
+    current_user: User = Depends(get_current_user),
+    client=Depends(get_clickhouse),
+    settings=Depends(get_settings),
+    filters: dict[str, object] = Depends(_parse_filters),
+) -> list[FilterOption]:
+    if field not in FILTER_OPTION_FIELDS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported filter field")
+    if field in filters:
+        filters.pop(field)
+    if q:
+        q = q.strip() or None
+    owner_filter = None if current_user.role != RoleEnum.NORMAL else current_user.id
+    table = build_scope_table(settings, _resolve_scope(scope, current_user))
+    where, params = build_where_clause(current_user.tenant_id, owner_filter, filters)
+    params["limit"] = limit
+    if q:
+        params["search"] = q
+        where += f" AND positionCaseInsensitive({field}, %(search)s) > 0"
+    query = (
+        f"SELECT DISTINCT {field} AS value "
+        f"FROM {table} "
+        f"WHERE {where} AND {field} IS NOT NULL AND {field} != '' "
+        "ORDER BY value "
+        "LIMIT %(limit)s"
+    )
+    rows = client.execute(query, params)
+    return [FilterOption(value=str(row[0])) for row in rows]
 
 
 # ---------------------------------------------------------------------
@@ -144,6 +251,8 @@ def transactions(
     pageSize: int | None = Query(None, ge=1, le=100),
     sort_by: str = Query("order_date"),
     sort_dir: str = Query("desc"),
+    search: str | None = Query(None),
+    search_mode: str = Query("contains"),
     current_user: User = Depends(get_current_user),
     client=Depends(get_clickhouse),
     settings=Depends(get_settings),
@@ -176,8 +285,13 @@ def transactions(
     
     if sort_dir.lower() not in {"asc", "desc"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported sort direction")
+
+    if search_mode not in {"contains", "exact"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported search mode")
+    if search:
+        search = search.strip() or None
     
-    table = fact_table(settings)
+    table = build_scope_table(settings, "clean")
     return get_transactions(
         client,
         table,
@@ -187,4 +301,6 @@ def transactions(
         page_size,
         sort_by,
         sort_dir,
+        search,
+        search_mode,
     )

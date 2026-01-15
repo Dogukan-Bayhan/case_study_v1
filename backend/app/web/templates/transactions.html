@@ -8,12 +8,113 @@
       <p class="label">Transaction Explorer</p>
       <p class="text-sm text-slate-300">Browse transaction-level data with tenant and role enforcement.</p>
     </div>
-    <div class="text-xs text-slate-400">
+    <div class="text-xs text-slate-400" id="transactions-total">
       Showing {{ data.total }} records
     </div>
   </div>
+  <form
+    id="transactions-controls"
+    class="mt-6 grid grid-cols-1 lg:grid-cols-[2fr_1fr_1fr] gap-4"
+    hx-get="/transactions/partial"
+    hx-target="#transactions-table"
+    hx-select="#transactions-table-content"
+    hx-swap="innerHTML"
+    hx-indicator="#transactions-loading"
+    hx-trigger="submit, keyup changed delay:400ms from:#transaction-search, change from:#search-mode, change from:#page-size"
+  >
+    <input type="hidden" name="page" id="transactions-page" value="{{ data.page }}" />
+    <input type="hidden" name="sort_by" id="transactions-sort-by" value="{{ sort_by }}" />
+    <input type="hidden" name="sort_dir" id="transactions-sort-dir" value="{{ sort_dir }}" />
+    <div class="filter-field">
+      <label for="transaction-search">Search Transaction ID</label>
+      <input
+        id="transaction-search"
+        name="search"
+        value="{{ search }}"
+        placeholder="Search by transaction_id"
+      />
+    </div>
+    <div class="filter-field">
+      <label for="search-mode">Match</label>
+      <select id="search-mode" name="search_mode">
+        <option value="contains" {% if search_mode == "contains" %}selected{% endif %}>Contains</option>
+        <option value="exact" {% if search_mode == "exact" %}selected{% endif %}>Exact</option>
+      </select>
+    </div>
+    <div class="filter-field">
+      <label for="page-size">Rows</label>
+      <select id="page-size" name="page_size">
+        {% for size in page_sizes %}
+          <option value="{{ size }}" {% if data.page_size == size %}selected{% endif %}>{{ size }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </form>
   <div class="mt-6" id="transactions-table">
     {% include "partials/transactions_table.html" %}
   </div>
 </section>
+
+<script>
+  const pageInput = document.getElementById("transactions-page");
+  const sortByInput = document.getElementById("transactions-sort-by");
+  const sortDirInput = document.getElementById("transactions-sort-dir");
+  const searchInput = document.getElementById("transaction-search");
+  const searchModeSelect = document.getElementById("search-mode");
+  const pageSizeSelect = document.getElementById("page-size");
+  const totalLabel = document.getElementById("transactions-total");
+
+  function resetPage() {
+    pageInput.value = "1";
+  }
+
+  function highlightMatches() {
+    const term = searchInput.value.trim();
+    const cells = document.querySelectorAll("[data-transaction-id]");
+    cells.forEach((cell) => {
+      const original = cell.dataset.transactionId;
+      if (!term) {
+        cell.textContent = original;
+        return;
+      }
+      const lowerText = original.toLowerCase();
+      const lowerTerm = term.toLowerCase();
+      let start = 0;
+      cell.textContent = "";
+      while (true) {
+        const index = lowerText.indexOf(lowerTerm, start);
+        if (index === -1) {
+          cell.append(document.createTextNode(original.slice(start)));
+          break;
+        }
+        if (index > start) {
+          cell.append(document.createTextNode(original.slice(start, index)));
+        }
+        const mark = document.createElement("mark");
+        mark.className = "search-hit";
+        mark.textContent = original.slice(index, index + term.length);
+        cell.append(mark);
+        start = index + term.length;
+      }
+    });
+  }
+
+  searchInput.addEventListener("input", resetPage);
+  searchModeSelect.addEventListener("change", resetPage);
+  pageSizeSelect.addEventListener("change", resetPage);
+
+  document.addEventListener("htmx:afterSwap", (event) => {
+    if (!event.target || !event.target.id || event.target.id !== "transactions-table") return;
+    const content = event.target.querySelector("#transactions-table-content");
+    if (content) {
+      sortByInput.value = content.dataset.sortBy || sortByInput.value;
+      sortDirInput.value = content.dataset.sortDir || sortDirInput.value;
+      pageInput.value = content.dataset.page || pageInput.value;
+      totalLabel.textContent = content.dataset.totalLabel || totalLabel.textContent;
+    }
+    highlightMatches();
+  });
+
+  highlightMatches();
+</script>
 {% endblock %}

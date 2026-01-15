@@ -6,7 +6,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.analytics.queries import TRANSACTION_COLUMNS, TRANSACTION_SORTABLE
-from app.analytics.service import get_kpis, get_timeseries, get_top_products, get_transactions
+from app.analytics.service import get_transactions
 from app.auth.service import authenticate_user, issue_token
 from app.core.config import Settings
 from app.core.deps import get_clickhouse, get_current_user, get_db, get_settings, require_role
@@ -108,23 +108,13 @@ def logout() -> RedirectResponse:
 def dashboard(
     request: Request,
     current_user: User = Depends(get_current_user),
-    client=Depends(get_clickhouse),
-    settings: Settings = Depends(get_settings),
 ):
     """Render the dashboard with tenant-scoped analytics."""
-    table = fact_table(settings)
-    owner_filter = current_user.id if current_user.role == RoleEnum.NORMAL else None
-    kpi_data = get_kpis(client, table, current_user.tenant_id, owner_filter)
-    series = get_timeseries(client, "revenue", "day", table, current_user.tenant_id, owner_filter)
-    top = get_top_products(client, table, current_user.tenant_id, owner_filter, 10)
     return templates.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
             "user": current_user,
-            "kpis": kpi_data,
-            "series": series,
-            "top_products": top,
         },
     )
 
@@ -192,6 +182,8 @@ def transactions_page(
     page_size: int = Query(50, ge=1, le=100),
     sort_by: str = Query("order_date"),
     sort_dir: str = Query("desc"),
+    search: str | None = Query(None),
+    search_mode: str = Query("contains"),
     current_user: User = Depends(get_current_user),
     client=Depends(get_clickhouse),
     settings: Settings = Depends(get_settings),
@@ -201,6 +193,10 @@ def transactions_page(
         sort_by = "order_date"
     if sort_dir.lower() not in {"asc", "desc"}:
         sort_dir = "desc"
+    if search_mode not in {"contains", "exact"}:
+        search_mode = "contains"
+    if search:
+        search = search.strip() or None
 
     table = fact_table(settings)
     owner_filter = current_user.id if current_user.role == RoleEnum.NORMAL else None
@@ -219,6 +215,8 @@ def transactions_page(
         page_size,
         sort_by,
         sort_dir,
+        search,
+        search_mode,
     )
     pagination = _pagination_state(data.page, data.page_size, data.total)
     return templates.TemplateResponse(
@@ -231,6 +229,8 @@ def transactions_page(
             "sort_by": sort_by,
             "sort_dir": sort_dir,
             "page_sizes": page_sizes,
+            "search": search or "",
+            "search_mode": search_mode,
             **pagination,
         },
     )
@@ -243,6 +243,8 @@ def transactions_partial(
     page_size: int = Query(50, ge=1, le=100),
     sort_by: str = Query("order_date"),
     sort_dir: str = Query("desc"),
+    search: str | None = Query(None),
+    search_mode: str = Query("contains"),
     current_user: User = Depends(get_current_user),
     client=Depends(get_clickhouse),
     settings: Settings = Depends(get_settings),
@@ -252,6 +254,10 @@ def transactions_partial(
         sort_by = "order_date"
     if sort_dir.lower() not in {"asc", "desc"}:
         sort_dir = "desc"
+    if search_mode not in {"contains", "exact"}:
+        search_mode = "contains"
+    if search:
+        search = search.strip() or None
 
     table = fact_table(settings)
     owner_filter = current_user.id if current_user.role == RoleEnum.NORMAL else None
@@ -270,6 +276,8 @@ def transactions_partial(
         page_size,
         sort_by,
         sort_dir,
+        search,
+        search_mode,
     )
     pagination = _pagination_state(data.page, data.page_size, data.total)
     return templates.TemplateResponse(
@@ -282,6 +290,8 @@ def transactions_partial(
             "sort_by": sort_by,
             "sort_dir": sort_dir,
             "page_sizes": page_sizes,
+            "search": search or "",
+            "search_mode": search_mode,
             **pagination,
         },
     )

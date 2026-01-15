@@ -2,51 +2,676 @@
 {% set title = "Analytics Dashboard" %}
 
 {% block content %}
-<section class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10">
-  <div class="card">
+<section class="panel mb-6" id="dashboard-controls">
+  <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+    <div>
+      <p class="label">Analytics Scope</p>
+      <div class="segmented mt-2" role="group" aria-label="Analytics scope selector">
+        {% set scope_locked = user.role == "normal" %}
+        <button class="segment" data-scope="all" {% if scope_locked %}disabled{% endif %}>All</button>
+        <button class="segment is-active" data-scope="clean">Clean</button>
+        <button class="segment" data-scope="issues" {% if scope_locked %}disabled{% endif %}>Issues</button>
+      </div>
+      {% if scope_locked %}
+        <p class="text-xs text-slate-400 mt-2">Scope locked to clean data for role-based visibility.</p>
+      {% endif %}
+    </div>
+    <div class="flex items-center gap-3">
+      <button id="filters-toggle" class="nav-link">Filters</button>
+      <span id="dashboard-status" class="text-xs text-slate-400">Ready</span>
+    </div>
+  </div>
+
+  <div id="filters-panel" class="filter-panel mt-5 hidden">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <details class="filter-group" open>
+        <summary class="filter-summary">Identity & Customer</summary>
+        <div class="filter-grid">
+          <div class="filter-field">
+            <label for="filter-transaction-id">Transaction ID</label>
+            <input id="filter-transaction-id" data-field="transaction_id" list="options-transaction_id" placeholder="TX-1001" />
+            <datalist id="options-transaction_id"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-customer-id">Customer ID</label>
+            <input id="filter-customer-id" data-field="customer_id" list="options-customer_id" placeholder="CUST-9" />
+            <datalist id="options-customer_id"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-customer-name">Customer Name</label>
+            <input id="filter-customer-name" data-field="customer_name" list="options-customer_name" placeholder="Avery Holdings" />
+            <datalist id="options-customer_name"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-email">Email</label>
+            <input id="filter-email" data-field="email" list="options-email" placeholder="name@company.com" />
+            <datalist id="options-email"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-phone">Phone</label>
+            <input id="filter-phone" data-field="phone" list="options-phone" placeholder="+1 (555) 012-3456" />
+            <datalist id="options-phone"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-returning">Returning Customer</label>
+            <select id="filter-returning" data-field="is_returning_customer">
+              <option value="">All</option>
+              <option value="0">New</option>
+              <option value="1">Returning</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <details class="filter-group" open>
+        <summary class="filter-summary">Location & Organization</summary>
+        <div class="filter-grid">
+          <div class="filter-field">
+            <label for="filter-country">Country</label>
+            <input id="filter-country" data-field="country" list="options-country" placeholder="United States" />
+            <datalist id="options-country"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-city">City</label>
+            <input id="filter-city" data-field="city" list="options-city" placeholder="New York" />
+            <datalist id="options-city"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-postal">Postal Code</label>
+            <input id="filter-postal" data-field="postal_code" list="options-postal_code" placeholder="10001" />
+            <datalist id="options-postal_code"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-region">Region</label>
+            <input id="filter-region" data-field="region_code" list="options-region_code" placeholder="NE" />
+            <datalist id="options-region_code"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-department">Department</label>
+            <input id="filter-department" data-field="department" list="options-department" placeholder="Retail Ops" />
+            <datalist id="options-department"></datalist>
+          </div>
+          <div class="filter-field">
+            <label for="filter-sales-rep">Sales Rep ID</label>
+            <input id="filter-sales-rep" data-field="sales_rep_id" list="options-sales_rep_id" placeholder="SR-42" />
+            <datalist id="options-sales_rep_id"></datalist>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <details class="filter-group mt-6" open>
+      <summary class="filter-summary">Product & Payment</summary>
+      <div class="filter-grid">
+        <div class="filter-field">
+          <label for="filter-category">Category</label>
+          <input id="filter-category" data-field="category" list="options-category" placeholder="apparel" />
+          <datalist id="options-category"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-product-name">Product Name</label>
+          <input id="filter-product-name" data-field="product_name" list="options-product_name" placeholder="Premium Hoodie" />
+          <datalist id="options-product_name"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-product-code">Product Code</label>
+          <input id="filter-product-code" data-field="product_code" list="options-product_code" placeholder="SKU-1002" />
+          <datalist id="options-product_code"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-payment">Payment Method</label>
+          <input id="filter-payment" data-field="payment_method" list="options-payment_method" placeholder="Credit Card" />
+          <datalist id="options-payment_method"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-status">Status</label>
+          <input id="filter-status" data-field="status" list="options-status" placeholder="completed" />
+          <datalist id="options-status"></datalist>
+        </div>
+        <div class="filter-field">
+          <label for="filter-tier">Tier</label>
+          <input id="filter-tier" data-field="tier" list="options-tier" placeholder="gold" />
+          <datalist id="options-tier"></datalist>
+        </div>
+      </div>
+    </details>
+
+    <details class="filter-group mt-6">
+      <summary class="filter-summary">Range Filters</summary>
+      <div class="filter-grid">
+        <div class="filter-field">
+          <label>Quantity</label>
+          <div class="range-inputs">
+            <input type="number" step="1" min="0" data-field="quantity_min" placeholder="Min" />
+            <input type="number" step="1" min="0" data-field="quantity_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Unit Price</label>
+          <div class="range-inputs">
+            <input type="number" step="0.01" min="0" data-field="unit_price_min" placeholder="Min" />
+            <input type="number" step="0.01" min="0" data-field="unit_price_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Discount %</label>
+          <div class="range-inputs">
+            <input type="number" step="0.01" min="0" data-field="discount_percent_min" placeholder="Min" />
+            <input type="number" step="0.01" min="0" data-field="discount_percent_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Tax Rate</label>
+          <div class="range-inputs">
+            <input type="number" step="0.01" min="0" data-field="tax_rate_min" placeholder="Min" />
+            <input type="number" step="0.01" min="0" data-field="tax_rate_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Loyalty Points</label>
+          <div class="range-inputs">
+            <input type="number" step="1" min="0" data-field="loyalty_points_min" placeholder="Min" />
+            <input type="number" step="1" min="0" data-field="loyalty_points_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Rating</label>
+          <div class="range-inputs">
+            <input type="number" step="0.1" min="0" max="5" data-field="rating_min" placeholder="Min" />
+            <input type="number" step="0.1" min="0" max="5" data-field="rating_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Total Amount</label>
+          <div class="range-inputs">
+            <input type="number" step="0.01" min="0" data-field="total_amount_min" placeholder="Min" />
+            <input type="number" step="0.01" min="0" data-field="total_amount_max" placeholder="Max" />
+          </div>
+        </div>
+        <div class="filter-field">
+          <label>Order Date</label>
+          <div class="range-inputs">
+            <input type="date" data-field="order_date_start" />
+            <input type="date" data-field="order_date_end" />
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div class="flex flex-wrap items-center gap-3 mt-6">
+      <button id="filters-apply" class="nav-link">Apply Filters</button>
+      <button id="filters-reset" class="nav-link">Reset</button>
+    </div>
+  </div>
+
+  <div id="active-filters" class="mt-4 flex flex-wrap gap-2"></div>
+</section>
+
+<section class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10" id="kpi-grid">
+  <div class="card kpi-card">
     <p class="label">Revenue</p>
-    <p class="value">${{ "%.2f" | format(kpis.revenue) }}</p>
+    <p class="value" data-kpi="revenue">--</p>
+    <p class="text-xs text-slate-400 mt-2" data-kpi-sub="revenue">Loading</p>
   </div>
-  <div class="card">
+  <div class="card kpi-card">
     <p class="label">Orders</p>
-    <p class="value">{{ kpis.orders }}</p>
+    <p class="value" data-kpi="orders">--</p>
+    <p class="text-xs text-slate-400 mt-2" data-kpi-sub="orders">Loading</p>
   </div>
-  <div class="card">
+  <div class="card kpi-card">
     <p class="label">Avg Order</p>
-    <p class="value">${{ "%.2f" | format(kpis.avg_order_value) }}</p>
+    <p class="value" data-kpi="avg_order_value">--</p>
+    <p class="text-xs text-slate-400 mt-2" data-kpi-sub="avg_order_value">Loading</p>
   </div>
-  <div class="card">
+  <div class="card kpi-card">
     <p class="label">Customers</p>
-    <p class="value">{{ kpis.unique_customers }}</p>
+    <p class="value" data-kpi="unique_customers">--</p>
+    <p class="text-xs text-slate-400 mt-2" data-kpi-sub="unique_customers">Loading</p>
   </div>
 </section>
 
-<section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+<section class="grid grid-cols-1 xl:grid-cols-2 gap-6">
   <div class="panel">
-    <h2 class="panel-title">Revenue by Day</h2>
-    <div class="mt-4 space-y-2">
-      {% for point in series %}
-        <div class="flex items-center justify-between text-sm">
-          <span class="text-slate-300">{{ point.bucket }}</span>
-          <span class="font-semibold">${{ "%.2f" | format(point.value) }}</span>
-        </div>
-      {% else %}
-        <p class="text-slate-400">No data available. Run ETL to populate analytics.</p>
-      {% endfor %}
+    <div class="flex items-center justify-between">
+      <h2 class="panel-title">Revenue Over Time</h2>
+      <span class="text-xs text-slate-400" id="revenue-updated">--</span>
     </div>
+    <div class="sparkline mt-4" id="revenue-sparkline"></div>
+    <div class="mt-4 space-y-2 text-sm" id="revenue-series-list"></div>
   </div>
   <div class="panel">
-    <h2 class="panel-title">Top Products</h2>
-    <div class="mt-4 space-y-2">
-      {% for item in top_products %}
-        <div class="flex items-center justify-between text-sm">
-          <span class="text-slate-300">{{ item.product_id }}</span>
-          <span class="font-semibold">${{ "%.2f" | format(item.revenue) }}</span>
-        </div>
-      {% else %}
-        <p class="text-slate-400">No product data yet.</p>
-      {% endfor %}
+    <div class="flex items-center justify-between">
+      <h2 class="panel-title">Orders Over Time</h2>
+      <span class="text-xs text-slate-400" id="orders-updated">--</span>
     </div>
+    <div class="sparkline mt-4" id="orders-sparkline"></div>
+    <div class="mt-4 space-y-2 text-sm" id="orders-series-list"></div>
   </div>
 </section>
+
+<section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+  <div class="panel">
+    <h2 class="panel-title">Revenue by Country</h2>
+    <div class="mt-4 breakdown-list" id="breakdown-country"></div>
+  </div>
+  <div class="panel">
+    <h2 class="panel-title">Revenue by Category</h2>
+    <div class="mt-4 breakdown-list" id="breakdown-category"></div>
+  </div>
+  <div class="panel">
+    <h2 class="panel-title">Revenue by Department</h2>
+    <div class="mt-4 breakdown-list" id="breakdown-department"></div>
+  </div>
+  <div class="panel">
+    <h2 class="panel-title">Revenue by Payment Method</h2>
+    <div class="mt-4 breakdown-list" id="breakdown-payment_method"></div>
+  </div>
+  <div class="panel">
+    <h2 class="panel-title">Revenue by Tier</h2>
+    <div class="mt-4 breakdown-list" id="breakdown-tier"></div>
+  </div>
+  <div class="panel">
+    <h2 class="panel-title">Avg Order Value by Tier</h2>
+    <div class="mt-4 breakdown-list" id="aov-tier"></div>
+  </div>
+</section>
+
+<section class="grid grid-cols-1 xl:grid-cols-3 gap-6 mt-8">
+  <div class="panel">
+    <h2 class="panel-title">Customer Segments</h2>
+    <div class="mt-4 breakdown-list" id="customer-segments"></div>
+  </div>
+  <div class="panel">
+    <h2 class="panel-title">Top Products by Revenue</h2>
+    <div class="mt-4 breakdown-list" id="top-products-revenue"></div>
+  </div>
+  <div class="panel">
+    <h2 class="panel-title">Top Products by Quantity</h2>
+    <div class="mt-4 breakdown-list" id="top-products-quantity"></div>
+  </div>
+</section>
+
+<script>
+  const scopeButtons = Array.from(document.querySelectorAll("[data-scope]"));
+  const statusLabel = document.getElementById("dashboard-status");
+  const filtersPanel = document.getElementById("filters-panel");
+  const activeFiltersEl = document.getElementById("active-filters");
+  const formatNumber = (value) => new Intl.NumberFormat().format(value);
+  const formatCurrency = (value) => `$${Number(value || 0).toFixed(2)}`;
+  const state = {
+    scope: "clean",
+    filters: {},
+  };
+
+  const filterLabels = {
+    transaction_id: "Transaction",
+    customer_id: "Customer ID",
+    customer_name: "Customer Name",
+    email: "Email",
+    phone: "Phone",
+    country: "Country",
+    city: "City",
+    postal_code: "Postal Code",
+    department: "Department",
+    category: "Category",
+    product_name: "Product",
+    product_code: "Product Code",
+    payment_method: "Payment Method",
+    status: "Status",
+    tier: "Tier",
+    region_code: "Region",
+    sales_rep_id: "Sales Rep",
+    is_returning_customer: "Returning",
+    quantity_min: "Quantity Min",
+    quantity_max: "Quantity Max",
+    unit_price_min: "Unit Price Min",
+    unit_price_max: "Unit Price Max",
+    discount_percent_min: "Discount Min",
+    discount_percent_max: "Discount Max",
+    tax_rate_min: "Tax Rate Min",
+    tax_rate_max: "Tax Rate Max",
+    loyalty_points_min: "Loyalty Min",
+    loyalty_points_max: "Loyalty Max",
+    rating_min: "Rating Min",
+    rating_max: "Rating Max",
+    total_amount_min: "Total Min",
+    total_amount_max: "Total Max",
+    order_date_start: "Order Date From",
+    order_date_end: "Order Date To",
+  };
+
+  function buildFilterParams(filters) {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value === "" || value === null || value === undefined) return;
+      if (key.endsWith("_min") || key.endsWith("_max") || key.endsWith("_start") || key.endsWith("_end")) {
+        params.set(`filter_${key}`, value);
+        return;
+      }
+      params.set(`filter_${key}`, value);
+    });
+    return params;
+  }
+
+  function collectFilters() {
+    const inputs = Array.from(filtersPanel.querySelectorAll("[data-field]"));
+    const filters = {};
+    inputs.forEach((input) => {
+      const field = input.dataset.field;
+      const value = input.value?.trim?.() ?? input.value;
+      if (value !== "" && value !== null && value !== undefined) {
+        filters[field] = value;
+      }
+    });
+    return filters;
+  }
+
+  function setScope(scope) {
+    state.scope = scope;
+    scopeButtons.forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.scope === scope);
+    });
+  }
+
+  function showFilters(open) {
+    filtersPanel.classList.toggle("hidden", !open);
+  }
+
+  function renderActiveFilters() {
+    activeFiltersEl.innerHTML = "";
+    const entries = Object.entries(state.filters);
+    if (!entries.length) {
+      activeFiltersEl.innerHTML = '<span class="text-xs text-slate-500">No active filters.</span>';
+      return;
+    }
+    entries.forEach(([key, value]) => {
+      const chip = document.createElement("button");
+      chip.className = "filter-chip";
+      const label = filterLabels[key] || key;
+      const displayValue = key === "is_returning_customer" ? (value === "1" ? "Returning" : "New") : value;
+      chip.innerHTML = `<span>${label}: ${displayValue}</span><span class="chip-close">x</span>`;
+      chip.addEventListener("click", () => {
+        const input = filtersPanel.querySelector(`[data-field="${key}"]`);
+        if (input) {
+          input.value = "";
+        }
+        delete state.filters[key];
+        refreshDashboard();
+      });
+      activeFiltersEl.appendChild(chip);
+    });
+  }
+
+  function renderSparkline(container, values) {
+    if (!values.length) {
+      container.innerHTML = '<div class="empty-state">No data available.</div>';
+      return;
+    }
+    const width = 300;
+    const height = 80;
+    const max = Math.max(...values.map((point) => point.value));
+    const min = Math.min(...values.map((point) => point.value));
+    const range = max - min || 1;
+    const points = values.map((point, index) => {
+      const x = (index / (values.length - 1 || 1)) * width;
+      const y = height - ((point.value - min) / range) * height;
+      return `${x},${y}`;
+    });
+    container.innerHTML = `
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        <polyline points="${points.join(" ")}" fill="none" stroke="rgba(251,191,36,0.8)" stroke-width="3" />
+      </svg>
+    `;
+  }
+
+  function renderSeriesList(container, values, formatter) {
+    container.innerHTML = "";
+    if (!values.length) {
+      container.innerHTML = '<div class="empty-state">No data available.</div>';
+      return;
+    }
+    values.slice(-6).forEach((point) => {
+      const row = document.createElement("div");
+      row.className = "flex items-center justify-between text-sm";
+      row.innerHTML = `
+        <span class="text-slate-300">${point.bucket}</span>
+        <span class="font-semibold">${formatter(point.value)}</span>
+      `;
+      container.appendChild(row);
+    });
+  }
+
+  function renderBreakdown(container, items, formatter, secondaryLabel, valueSelector) {
+    container.innerHTML = "";
+    if (!items.length) {
+      container.innerHTML = '<div class="empty-state">No data available.</div>';
+      return;
+    }
+    const getValue = valueSelector || ((item) => item.revenue ?? item.value ?? 0);
+    const maxValue = Math.max(...items.map((item) => getValue(item)), 1);
+    items.forEach((item) => {
+      const value = getValue(item);
+      const label = item.key ?? item.product ?? "Unknown";
+      const row = document.createElement("div");
+      row.className = "breakdown-row";
+      row.innerHTML = `
+        <div class="flex items-center justify-between text-sm">
+          <span class="text-slate-300">${label}</span>
+          <span class="font-semibold">${formatter(value)}</span>
+        </div>
+        <div class="breakdown-bar">
+          <span style="width: ${(value / maxValue) * 100}%"></span>
+        </div>
+        ${secondaryLabel ? `<p class="text-xs text-slate-500 mt-1">${secondaryLabel(item)}</p>` : ""}
+      `;
+      container.appendChild(row);
+    });
+  }
+
+  function renderCustomerSegments(container, segments) {
+    renderBreakdown(
+      container,
+      segments.map((segment) => ({ ...segment, key: segment.segment, revenue: segment.revenue })),
+      formatCurrency,
+      (segment) => `${formatNumber(segment.orders)} orders - ${formatNumber(segment.customers)} customers`
+    );
+  }
+
+  function renderSkeletonList(container, lines = 4) {
+    container.innerHTML = "";
+    for (let idx = 0; idx < lines; idx += 1) {
+      const line = document.createElement("div");
+      line.className = "skeleton skeleton-block";
+      container.appendChild(line);
+    }
+  }
+
+  function setLoadingState() {
+    document.querySelectorAll("[data-kpi]").forEach((el) => {
+      el.classList.add("skeleton");
+      el.classList.add("skeleton-block");
+      el.textContent = "";
+    });
+    document.querySelectorAll("[data-kpi-sub]").forEach((el) => {
+      el.textContent = "Loading...";
+    });
+    ["revenue", "orders"].forEach((key) => {
+      const spark = document.getElementById(`${key}-sparkline`);
+      spark.innerHTML = '<div class="skeleton skeleton-fill"></div>';
+      renderSkeletonList(document.getElementById(`${key}-series-list`), 5);
+    });
+    [
+      "breakdown-country",
+      "breakdown-category",
+      "breakdown-department",
+      "breakdown-payment_method",
+      "breakdown-tier",
+      "aov-tier",
+      "customer-segments",
+      "top-products-revenue",
+      "top-products-quantity",
+    ].forEach((id) => renderSkeletonList(document.getElementById(id), 4));
+  }
+
+  async function fetchJson(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error("Request failed");
+    }
+    return response.json();
+  }
+
+  function buildUrl(path, params) {
+    const query = new URLSearchParams(params);
+    return `${path}?${query.toString()}`;
+  }
+
+  async function refreshDashboard() {
+    state.filters = collectFilters();
+    renderActiveFilters();
+    statusLabel.textContent = "Loading...";
+    setLoadingState();
+    const filters = buildFilterParams(state.filters);
+    const scope = state.scope;
+
+    const baseParams = new URLSearchParams(filters);
+    baseParams.set("scope", scope);
+
+    try {
+      const [
+        kpis,
+        revenueSeries,
+        ordersSeries,
+        country,
+        category,
+        department,
+        paymentMethod,
+        tier,
+        customerSegments,
+        topRevenue,
+        topQuantity,
+      ] = await Promise.all([
+        fetchJson(buildUrl("/analytics/kpis", baseParams)),
+        fetchJson(buildUrl("/analytics/timeseries", new URLSearchParams({ ...Object.fromEntries(baseParams), metric: "revenue", grain: "day" }))),
+        fetchJson(buildUrl("/analytics/timeseries", new URLSearchParams({ ...Object.fromEntries(baseParams), metric: "orders", grain: "day" }))),
+        fetchJson(buildUrl("/analytics/breakdown", new URLSearchParams({ ...Object.fromEntries(baseParams), dimension: "country" }))),
+        fetchJson(buildUrl("/analytics/breakdown", new URLSearchParams({ ...Object.fromEntries(baseParams), dimension: "category" }))),
+        fetchJson(buildUrl("/analytics/breakdown", new URLSearchParams({ ...Object.fromEntries(baseParams), dimension: "department" }))),
+        fetchJson(buildUrl("/analytics/breakdown", new URLSearchParams({ ...Object.fromEntries(baseParams), dimension: "payment_method" }))),
+        fetchJson(buildUrl("/analytics/breakdown", new URLSearchParams({ ...Object.fromEntries(baseParams), dimension: "tier" }))),
+        fetchJson(buildUrl("/analytics/customer-segments", baseParams)),
+        fetchJson(buildUrl("/analytics/top-products", new URLSearchParams({ ...Object.fromEntries(baseParams), metric: "revenue", limit: "8" }))),
+        fetchJson(buildUrl("/analytics/top-products", new URLSearchParams({ ...Object.fromEntries(baseParams), metric: "quantity", limit: "8" }))),
+      ]);
+
+      document.querySelector('[data-kpi="revenue"]').textContent = formatCurrency(kpis.revenue || 0);
+      document.querySelector('[data-kpi="orders"]').textContent = formatNumber(kpis.orders || 0);
+      document.querySelector('[data-kpi="avg_order_value"]').textContent = formatCurrency(kpis.avg_order_value || 0);
+      document.querySelector('[data-kpi="unique_customers"]').textContent = formatNumber(kpis.unique_customers || 0);
+      document.querySelectorAll("[data-kpi]").forEach((el) => {
+        el.classList.remove("skeleton", "skeleton-block");
+      });
+      const filterCount = Object.keys(state.filters).length;
+      const metaLabel = `${state.scope.toUpperCase()} - ${filterCount ? `${filterCount} filters` : "No filters"}`;
+      document.querySelectorAll("[data-kpi-sub]").forEach((el) => {
+        el.textContent = metaLabel;
+      });
+
+      renderSparkline(document.getElementById("revenue-sparkline"), revenueSeries);
+      renderSeriesList(document.getElementById("revenue-series-list"), revenueSeries, formatCurrency);
+      renderSparkline(document.getElementById("orders-sparkline"), ordersSeries);
+      renderSeriesList(document.getElementById("orders-series-list"), ordersSeries, formatNumber);
+
+      renderBreakdown(document.getElementById("breakdown-country"), country, formatCurrency, (item) => `${formatNumber(item.orders)} orders`);
+      renderBreakdown(document.getElementById("breakdown-category"), category, formatCurrency, (item) => `${formatNumber(item.orders)} orders`);
+      renderBreakdown(document.getElementById("breakdown-department"), department, formatCurrency, (item) => `${formatNumber(item.orders)} orders`);
+      renderBreakdown(document.getElementById("breakdown-payment_method"), paymentMethod, formatCurrency, (item) => `${formatNumber(item.orders)} orders`);
+      renderBreakdown(document.getElementById("breakdown-tier"), tier, formatCurrency, (item) => `${formatNumber(item.orders)} orders`);
+      renderBreakdown(
+        document.getElementById("aov-tier"),
+        tier,
+        formatCurrency,
+        (item) => `${formatNumber(item.orders)} orders`,
+        (item) => item.avg_order_value || 0
+      );
+
+      renderCustomerSegments(document.getElementById("customer-segments"), customerSegments || []);
+      renderBreakdown(document.getElementById("top-products-revenue"), topRevenue, formatCurrency);
+      renderBreakdown(document.getElementById("top-products-quantity"), topQuantity, formatNumber);
+
+      const updatedAt = new Date().toLocaleTimeString();
+      document.getElementById("revenue-updated").textContent = `Updated ${updatedAt}`;
+      document.getElementById("orders-updated").textContent = `Updated ${updatedAt}`;
+      statusLabel.textContent = `Updated ${updatedAt}`;
+    } catch (err) {
+      statusLabel.textContent = "Failed to load analytics";
+    }
+  }
+
+  function bindScopeControls() {
+    scopeButtons.forEach((button) => {
+      if (button.disabled) return;
+      button.addEventListener("click", () => {
+        setScope(button.dataset.scope);
+        refreshDashboard();
+      });
+    });
+  }
+
+  function bindFilterControls() {
+    document.getElementById("filters-toggle").addEventListener("click", () => {
+      showFilters(filtersPanel.classList.contains("hidden"));
+    });
+    document.getElementById("filters-apply").addEventListener("click", () => refreshDashboard());
+    document.getElementById("filters-reset").addEventListener("click", () => {
+      filtersPanel.querySelectorAll("[data-field]").forEach((input) => {
+        input.value = "";
+      });
+      state.filters = {};
+      refreshDashboard();
+    });
+  }
+
+  function bindAutocomplete() {
+    const inputs = Array.from(filtersPanel.querySelectorAll("input[data-field]"));
+    inputs.forEach((input) => {
+      const field = input.dataset.field;
+      const datalistId = input.getAttribute("list");
+      if (!datalistId) return;
+      let timeout;
+      const loadOptions = async () => {
+        const currentFilters = collectFilters();
+        delete currentFilters[field];
+        const params = buildFilterParams(currentFilters);
+        params.set("scope", state.scope);
+        params.set("field", field);
+        if (input.value) {
+          params.set("q", input.value);
+        }
+        try {
+          const data = await fetchJson(`/analytics/filter-options?${params.toString()}`);
+          const list = document.getElementById(datalistId);
+          list.innerHTML = "";
+          data.forEach((option) => {
+            const item = document.createElement("option");
+            item.value = option.value;
+            list.appendChild(item);
+          });
+        } catch (err) {
+          // Ignore autocomplete failures.
+        }
+      };
+      input.addEventListener("focus", () => loadOptions());
+      input.addEventListener("input", () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(loadOptions, 250);
+      });
+    });
+  }
+
+  bindScopeControls();
+  bindFilterControls();
+  bindAutocomplete();
+  refreshDashboard();
+</script>
 {% endblock %}
