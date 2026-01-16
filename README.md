@@ -240,3 +240,67 @@ docker compose exec api pytest app/tests/qa
 
 These trade-offs keep the scope focused on correctness, architecture, and evaluation criteria for the case study timeline.
 
+
+## 6. System Architecture Diagram
+
+```mermaid
+flowchart LR
+  subgraph USERS[Users]
+    admin[Admin User]
+    normal[Normal User]
+    guest[Guest User]
+  end
+
+  subgraph FRONTEND[Web UI]
+    ui[Dashboard / Analytics / Quality / Transactions]
+  end
+
+  subgraph BACKEND[FastAPI Application]
+    auth[Auth & Role Middleware]
+    admin_api[API Routers: Admin]
+    analytics_api[API Routers: Analytics]
+    quality_api[API Routers: Quality]
+  end
+
+  subgraph PIPELINE[ETL / Data Quality Pipeline]
+    loader[ETL / Loader]
+    rules[Quality Rules Engine]
+    issues_writer[Issues Writer]
+  end
+
+  subgraph DATA[Data Stores]
+    pg[(PostgreSQL: users, tenants, auth, metadata)]
+    ch_raw[(ClickHouse Raw Table)]
+    ch_clean[(ClickHouse Clean Fact Table)]
+    ch_issues[(ClickHouse Issues Table)]
+  end
+
+  admin -->|JWT + tenant_id| ui
+  normal -->|JWT + tenant_id| ui
+  guest -->|Guest token + tenant_id| ui
+  ui -->|HTTPS requests| auth
+
+  auth -->|Role + tenant scope| admin_api
+  auth -->|Role + tenant scope| analytics_api
+  auth -->|Role + tenant scope| quality_api
+
+  admin_api -->|User/tenant metadata| pg
+  quality_api -->|Reports/findings metadata| pg
+  analytics_api -->|Tenant filtered query| ch_clean
+  analytics_api -->|Scope issue queries| ch_issues
+  quality_api -->|Tenant filtered query| ch_issues
+
+  loader -->|Write raw rows| ch_raw
+  loader -->|Load clean facts| ch_clean
+  loader -->|Load issue facts| ch_issues
+  loader --> rules --> issues_writer --> ch_issues
+  loader -->|ETL run metadata| pg
+```
+
+Users (Admin, Normal User, Guest) access the Web UI, which sends authenticated requests to the FastAPI application. The Auth & Role Middleware validates the token, enforces role rules, and applies tenant scoping before requests reach the Admin, Analytics, or Quality routers.
+
+Request flow is explicit: the UI calls FastAPI, and the API reads metadata from PostgreSQL while analytics queries are executed against ClickHouse. Tenant filtering is applied in the API layer and reinforced in ClickHouse queries using tenant_id (and owner_user_id for normal users), preventing cross-tenant leakage.
+
+The ETL/Loader ingests CSV data, runs the Quality Rules Engine, writes issue rows via the Issues Writer, and populates ClickHouse raw, clean, and issues tables. ETL run metadata and quality findings are written to PostgreSQL for auditing and UI summaries.
+
+PostgreSQL is used for consistent operational data (users, tenants, auth, ETL metadata), while ClickHouse is used for high-performance analytics on large fact tables. This separation keeps transactional workloads reliable and analytical queries fast.
