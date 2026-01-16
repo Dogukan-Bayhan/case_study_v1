@@ -331,6 +331,49 @@ def _fetch_existing_transaction_ids(
     return existing
 
 
+def _build_city_country_reference(
+    cities: list[str],
+    countries: list[str],
+    min_share: float = 0.9,
+    min_count: int = 25,
+) -> dict[str, str]:
+    """Build a high-confidence city-to-country map from batch values.
+
+    Business purpose:
+        Provide a best-effort reference map when static mappings are incomplete.
+    Why it exists:
+        Geography validation should avoid false positives for ambiguous cities.
+    Where used:
+        ETL validation when computing COUNTRY_CITY_MISMATCH.
+    Inputs:
+        cities: Normalized city values for the batch.
+        countries: Normalized country values for the batch.
+        min_share: Minimum share required to accept a city-country mapping.
+        min_count: Minimum observations required before mapping a city.
+    Returns:
+        Mapping of city to its dominant country when confidence is high.
+    """
+    city_country_counts: dict[str, dict[str, int]] = {}
+    for city, country in zip(cities, countries):
+        if not city or not country:
+            continue
+        city_counts = city_country_counts.setdefault(city, {})
+        city_counts[country] = city_counts.get(country, 0) + 1
+
+    mapping: dict[str, str] = {}
+    for city, counts in city_country_counts.items():
+        total = sum(counts.values())
+        if total < min_count:
+            continue
+        best_country, best_count = max(counts.items(), key=lambda item: item[1])
+        # Ensure the dominant country is unique to avoid ambiguous mappings.
+        if sum(1 for count in counts.values() if count == best_count) > 1:
+            continue
+        if (best_count / total) >= min_share:
+            mapping[city] = best_country
+    return mapping
+
+
 def _evaluate_issue_rows(
     df: pl.DataFrame,
     raw_df: pl.DataFrame,
@@ -422,12 +465,157 @@ def _evaluate_issue_rows(
         for country, city in zip(country_values, city_values)
     ]
 
+    normalized_countries = [rules.normalize_country(value) for value in df["country"].to_list()]
+    normalized_cities = [rules.normalize_key(value) for value in df["city"].to_list()]
+    normalized_regions = [rules.normalize_region(value) for value in df["region_code"].to_list()]
+    normalized_postal_codes = [rules.normalize_postal_code(value) for value in df["postal_code"].to_list()]
+    phone_values = df["phone"].to_list()
+    normalized_statuses = [rules.normalize_value(value) for value in df["status"].to_list()]
+    normalized_payments = [rules.normalize_value(value) for value in df["payment_method"].to_list()]
+    normalized_categories = [rules.normalize_value(value) for value in df["category"].to_list()]
+    normalized_departments = [rules.normalize_value(value) for value in df["department"].to_list()]
+
+    dynamic_city_map = _build_city_country_reference(normalized_cities, normalized_countries)
+    city_country_reference = dict(rules.CITY_TO_COUNTRY)
+    for city, country in dynamic_city_map.items():
+        if city not in city_country_reference:
+            city_country_reference[city] = country
+
+    country_city_mismatch_mask = []
+    for city, country in zip(normalized_cities, normalized_countries):
+        if not city or not country or country not in rules.KNOWN_COUNTRIES:
+            country_city_mismatch_mask.append(False)
+            continue
+        expected = city_country_reference.get(city)
+        country_city_mismatch_mask.append(bool(expected and expected != country))
+
+    region_country_mismatch_mask = []
+    for country, region in zip(normalized_countries, normalized_regions):
+        expected = rules.COUNTRY_TO_REGION.get(country)
+        if not expected or not region:
+            region_country_mismatch_mask.append(False)
+            continue
+        region_country_mismatch_mask.append(region != expected)
+
+    postal_code_invalid_mask = []
+    for country, postal_code in zip(normalized_countries, normalized_postal_codes):
+        pattern = rules.POSTAL_CODE_REGEX.get(country)
+        if not pattern or not postal_code:
+            postal_code_invalid_mask.append(False)
+            continue
+        postal_code_invalid_mask.append(not pattern.fullmatch(postal_code))
+
+    phone_prefixes = sorted(rules.PHONE_PREFIX_COUNTRY, key=len, reverse=True)
+    phone_country_mismatch_mask = []
+    for country, phone in zip(normalized_countries, phone_values):
+        if country not in rules.KNOWN_COUNTRIES or phone is None:
+            phone_country_mismatch_mask.append(False)
+            continue
+        phone_text = str(phone).strip()
+        if not phone_text or not (phone_text.startswith("+") or phone_text.startswith("00")):
+            phone_country_mismatch_mask.append(False)
+            continue
+        digits = rules.PHONE_DIGITS_RE.sub("", phone_text)
+        if digits.startswith("00"):
+            digits = digits[2:]
+        if not digits:
+            phone_country_mismatch_mask.append(False)
+            continue
+        matched_prefix = None
+        for prefix in phone_prefixes:
+            if digits.startswith(prefix):
+                matched_prefix = prefix
+                break
+        if not matched_prefix:
+            phone_country_mismatch_mask.append(False)
+            continue
+        countries = rules.PHONE_PREFIX_COUNTRY.get(matched_prefix, set())
+        if len(countries) != 1 or country in countries:
+            phone_country_mismatch_mask.append(False)
+            continue
+        phone_country_mismatch_mask.append(True)
+
+    status_invalid_mask = [
+        bool(status and status not in rules.ALLOWED_STATUSES)
+        for status in normalized_statuses
+    ]
+    payment_invalid_mask = [
+        bool(payment and payment not in rules.ALLOWED_PAYMENT_METHODS)
+        for payment in normalized_payments
+    ]
+    status_payment_inconsistent_mask = [
+        status in rules.STATUS_REQUIRES_PAYMENT
+        and (not payment or payment not in rules.ALLOWED_PAYMENT_METHODS)
+        for status, payment in zip(normalized_statuses, normalized_payments)
+    ]
+    category_invalid_mask = [
+        bool(category and category not in rules.ALLOWED_CATEGORIES)
+        for category in normalized_categories
+    ]
+    department_invalid_mask = [
+        bool(department and department not in rules.ALLOWED_DEPARTMENTS)
+        for department in normalized_departments
+    ]
+
+    def _clean_numeric(expr: pl.Expr) -> pl.Expr:
+        """Normalize numeric strings for tolerant financial validation."""
+        return expr.str.replace_all(r"[^0-9.\\-]", "").cast(pl.Float64, strict=False)
+
+    quantity_raw = pl.col("quantity").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+    unit_price_raw = pl.col("unit_price").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+    total_amount_raw = pl.col("total_amount").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+    discount_raw = pl.col("discount_percent").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+    tax_raw = pl.col("tax_rate").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+
+    quantity_val = _clean_numeric(quantity_raw)
+    unit_price_val = _clean_numeric(unit_price_raw)
+    total_amount_val = _clean_numeric(total_amount_raw)
+    discount_val = _clean_numeric(discount_raw)
+    tax_val = _clean_numeric(tax_raw)
+
+    discount_invalid = (discount_raw != "") & discount_val.is_null()
+    tax_invalid = (tax_raw != "") & tax_val.is_null()
+    valid_financial = (
+        quantity_val.is_not_null()
+        & unit_price_val.is_not_null()
+        & total_amount_val.is_not_null()
+        & ~discount_invalid
+        & ~tax_invalid
+    )
+    expected_total = (
+        quantity_val
+        * unit_price_val
+        * (1 - discount_val.fill_null(0.0) / 100)
+        * (1 + tax_val.fill_null(0.0) / 100)
+    )
+    tolerance = pl.when(
+        expected_total.abs() * rules.FINANCIAL_MISMATCH_REL_TOLERANCE
+        > rules.FINANCIAL_MISMATCH_MIN_TOLERANCE
+    ).then(
+        expected_total.abs() * rules.FINANCIAL_MISMATCH_REL_TOLERANCE
+    ).otherwise(
+        rules.FINANCIAL_MISMATCH_MIN_TOLERANCE
+    )
+    financial_mismatch_mask = df.select(
+        (valid_financial & ((expected_total - total_amount_val).abs() > tolerance)).fill_null(False)
+    ).to_series().to_list()
+
     # Compose the final issue mask by combining all rule masks.
     issue_mask = [
         missing_mask[idx]
         or price_mismatch_mask[idx]
         or duplicate_mask[idx]
         or suspected_typo_mask[idx]
+        or country_city_mismatch_mask[idx]
+        or region_country_mismatch_mask[idx]
+        or postal_code_invalid_mask[idx]
+        or phone_country_mismatch_mask[idx]
+        or financial_mismatch_mask[idx]
+        or status_invalid_mask[idx]
+        or payment_invalid_mask[idx]
+        or status_payment_inconsistent_mask[idx]
+        or category_invalid_mask[idx]
+        or department_invalid_mask[idx]
         for idx in range(len(transaction_ids))
     ]
     issue_mask_series = pl.Series(issue_mask)
@@ -452,19 +640,45 @@ def _evaluate_issue_rows(
             continue
         issues: list[str] = []
         severity: list[str] = []
+        issue_set: set[str] = set()
+
+        def _add_issue(code: str, level: str) -> None:
+            """Append a rule code and severity once per row for deduplication."""
+            if code in issue_set:
+                return
+            issue_set.add(code)
+            issues.append(code)
+            severity.append(level)
+
         # Build issue codes and severities in a fixed order for consistency.
         if missing_mask[idx]:
-            issues.append(rules.RULE_MISSING_REQUIRED)
-            severity.append(rules.SEVERITY_ERROR)
+            _add_issue(rules.RULE_MISSING_REQUIRED, rules.SEVERITY_ERROR)
         if price_mismatch_mask[idx]:
-            issues.append(rules.RULE_PRICE_MISMATCH)
-            severity.append(rules.SEVERITY_ERROR)
+            _add_issue(rules.RULE_PRICE_MISMATCH, rules.SEVERITY_ERROR)
         if duplicate_mask[idx]:
-            issues.append(rules.RULE_DUPLICATE_TRANSACTION_ID)
-            severity.append(rules.SEVERITY_ERROR)
+            _add_issue(rules.RULE_DUPLICATE_TRANSACTION_ID, rules.SEVERITY_ERROR)
         if suspected_typo_mask[idx]:
-            issues.append(rules.RULE_SUSPECTED_TYPO)
-            severity.append(rules.SEVERITY_INFO)
+            _add_issue(rules.RULE_SUSPECTED_TYPO, rules.SEVERITY_INFO)
+        if country_city_mismatch_mask[idx]:
+            _add_issue(rules.RULE_COUNTRY_CITY_MISMATCH, rules.SEVERITY_ERROR)
+        if region_country_mismatch_mask[idx]:
+            _add_issue(rules.RULE_REGION_COUNTRY_MISMATCH, rules.SEVERITY_ERROR)
+        if postal_code_invalid_mask[idx]:
+            _add_issue(rules.RULE_POSTAL_CODE_INVALID, rules.SEVERITY_WARN)
+        if phone_country_mismatch_mask[idx]:
+            _add_issue(rules.RULE_PHONE_COUNTRY_MISMATCH, rules.SEVERITY_WARN)
+        if financial_mismatch_mask[idx]:
+            _add_issue(rules.RULE_FINANCIAL_TOTAL_MISMATCH, rules.SEVERITY_ERROR)
+        if status_invalid_mask[idx]:
+            _add_issue(rules.RULE_STATUS_INVALID, rules.SEVERITY_WARN)
+        if payment_invalid_mask[idx]:
+            _add_issue(rules.RULE_PAYMENT_METHOD_INVALID, rules.SEVERITY_WARN)
+        if status_payment_inconsistent_mask[idx]:
+            _add_issue(rules.RULE_STATUS_PAYMENT_INCONSISTENT, rules.SEVERITY_WARN)
+        if category_invalid_mask[idx]:
+            _add_issue(rules.RULE_CATEGORY_INVALID, rules.SEVERITY_WARN)
+        if department_invalid_mask[idx]:
+            _add_issue(rules.RULE_DEPARTMENT_INVALID, rules.SEVERITY_WARN)
 
         issue_rows.append(
             {
@@ -600,6 +814,10 @@ def run_etl(
     seen_ids: set[str] = set()
     logged_preview = False
     final_status = "success"
+    post_load_checks: dict[str, dict[str, float | str | bool]] = {}
+    order_date_counts: dict[str, int] = {}
+    order_date_total = 0
+    order_date_all_midnight = True
 
     # Collect NORMAL users to assign deterministic owner_user_id values.
     user_ids = [
@@ -710,6 +928,34 @@ def run_etl(
             )
             event_ts = event_ts.fill_null(order_date).rename("event_ts")
             order_date = order_date.fill_null(event_ts).rename("order_date")
+
+            if order_date.len() > 0:
+                order_date_df = pl.DataFrame({"order_date": order_date})
+                non_null_count = int(order_date.len() - order_date.null_count())
+                if non_null_count:
+                    order_date_total += non_null_count
+                    counts = (
+                        order_date_df
+                        .filter(pl.col("order_date").is_not_null())
+                        .group_by("order_date")
+                        .count()
+                    )
+                    for order_value, count in counts.iter_rows():
+                        key = order_value.isoformat() if isinstance(order_value, datetime) else str(order_value)
+                        order_date_counts[key] = order_date_counts.get(key, 0) + int(count)
+                if order_date_all_midnight and non_null_count:
+                    non_midnight = (
+                        order_date_df.select(
+                            (
+                                (pl.col("order_date").dt.hour() != 0)
+                                | (pl.col("order_date").dt.minute() != 0)
+                                | (pl.col("order_date").dt.second() != 0)
+                            ).any()
+                        )
+                        .to_series()[0]
+                    )
+                    if non_midnight:
+                        order_date_all_midnight = False
 
             is_returning_customer = (
                 df["is_returning_customer"]
@@ -854,6 +1100,22 @@ def run_etl(
             quality.set_null_heavy(null_heavy)
             final_status = "warning"
 
+        if order_date_counts:
+            most_common_timestamp, most_common_count = max(
+                order_date_counts.items(),
+                key=lambda item: item[1],
+            )
+            ratio = most_common_count / order_date_total if order_date_total else 0.0
+            flagged = ratio >= rules.TEMPORAL_UNIFORMITY_THRESHOLD or order_date_all_midnight
+            post_load_checks["temporal_uniformity"] = {
+                "flagged": flagged,
+                "most_common_timestamp": most_common_timestamp,
+                "most_common_ratio": round(ratio, 6),
+                "total_rows": float(order_date_total),
+                "all_midnight": order_date_all_midnight,
+                "threshold": rules.TEMPORAL_UNIFORMITY_THRESHOLD,
+            }
+
         if not dry_run:
             # Compute outliers and post-load sanity checks in ClickHouse.
             quality.set_outliers(_compute_outliers(client, tenant.id, table))
@@ -875,15 +1137,11 @@ def run_etl(
             customer_ratio = (
                 (customer_name_non_null / total_rows) if total_rows else 0
             )
-            quality.set_post_load_checks(
-                {
-                    "customer_name_non_null": {
-                        "total_rows": float(total_rows),
-                        "non_null": float(customer_name_non_null),
-                        "ratio": round(customer_ratio, 6),
-                    }
-                }
-            )
+            post_load_checks["customer_name_non_null"] = {
+                "total_rows": float(total_rows),
+                "non_null": float(customer_name_non_null),
+                "ratio": round(customer_ratio, 6),
+            }
             if total_rows and customer_ratio <= 0.05:
                 logger.warning(
                     "Post-load check: customer_name non-null ratio is %.2f%%",
@@ -892,6 +1150,9 @@ def run_etl(
                 final_status = "warning"
         else:
             final_status = "dry_run"
+
+        if post_load_checks:
+            quality.set_post_load_checks(post_load_checks)
 
         # Persist the quality report and derived findings for the run.
         report = QualityReport(

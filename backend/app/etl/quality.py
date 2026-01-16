@@ -295,4 +295,16 @@ class QualityAccumulator:
                 }
             )
 
+        temporal_check = self.post_load_checks.get("temporal_uniformity")
+        if temporal_check and temporal_check.get("flagged"):
+            findings.append(
+                {
+                    "severity": "info",
+                    "column": "order_date",
+                    "check": "temporal_uniformity",
+                    "message": "Order timestamps show unusually uniform distribution",
+                    "examples": temporal_check,
+                }
+            )
+
         return findings
