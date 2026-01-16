@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% set title = "Slice & Dice Studio" %}
+{% set title = "Analytics Explorer" %}
 {% block content %}
 <section class="grid grid-cols-1 xl:grid-cols-[360px_1fr] gap-6" id="slice-dice">
   <aside class="panel builder-panel">
@@ -244,7 +244,11 @@
               <option value="100">100</option>
             </select>
           </div>
-          <button id="export-csv" class="nav-link">Export CSV</button>
+          {% if user.role != "guest" %}
+            <button id="export-csv" class="nav-link">Export CSV</button>
+          {% else %}
+            <span class="text-xs text-slate-400 uppercase tracking-[0.2em]">Read-only</span>
+          {% endif %}
         </div>
       </div>
     </section>

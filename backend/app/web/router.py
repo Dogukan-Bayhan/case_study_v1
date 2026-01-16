@@ -7,11 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.analytics.queries import TRANSACTION_COLUMNS, TRANSACTION_SORTABLE
 from app.analytics.service import get_transactions
-from app.auth.service import authenticate_user, issue_token
+from app.auth.service import authenticate_user, create_user, issue_guest_token, issue_token
 from app.core.config import Settings
-from app.core.deps import get_clickhouse, get_current_user, get_db, get_settings, require_role
+from app.core.deps import get_clickhouse, get_current_user, get_db, get_settings
 from app.db.clickhouse import fact_table
-from app.db.models import QualityFinding, QualityReport, RoleEnum, User
+from app.db.models import QualityFinding, QualityReport, RoleEnum, Tenant, User
 
 router = APIRouter(tags=["web"])
 templates = Jinja2Templates(directory="/app/app/web/templates")
@@ -95,6 +95,28 @@ def _pagination_state(page: int, page_size: int, total: int) -> dict[str, int | 
     return {"total_pages": total_pages, "prev_page": prev_page, "next_page": next_page}
 
 
+def _resolve_tenant(db: Session, tenant_slug: str | None) -> Tenant:
+    """Resolve a tenant by slug or fall back to the first tenant."""
+    query = db.query(Tenant)
+    if tenant_slug:
+        tenant = query.filter(Tenant.slug == tenant_slug).first()
+        if tenant:
+            return tenant
+    tenant = query.order_by(Tenant.id.asc()).first()
+    if not tenant:
+        raise ValueError("No tenant available")
+    return tenant
+
+
+def _access_denied(request: Request, current_user: User | None = None):
+    """Render an access denied template for unauthorized web routes."""
+    return templates.TemplateResponse(
+        "access_denied.html",
+        {"request": request, "user": current_user},
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
 @router.get("/login")
 def login_page(request: Request):
     """Render the login page template.
@@ -111,6 +133,12 @@ def login_page(request: Request):
         TemplateResponse for the login page.
     """
     return templates.TemplateResponse("login.html", {"request": request})
+
+
+@router.get("/signup")
+def signup_page(request: Request):
+    """Render the sign-up page template."""
+    return templates.TemplateResponse("signup.html", {"request": request})
 
 
 @router.post("/login")
@@ -149,6 +177,65 @@ def login_submit(
         )
     # Issue a JWT and store it as an HTTP-only cookie.
     token = issue_token(user, settings)
+    response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie("access_token", token, httponly=True, samesite="lax")
+    return response
+
+
+@router.post("/signup")
+def signup_submit(
+    request: Request,
+    full_name: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    tenant_slug: str | None = Form(None),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Register a normal user account and establish a web session."""
+    try:
+        tenant = _resolve_tenant(db, tenant_slug)
+    except ValueError:
+        return templates.TemplateResponse(
+            "signup.html",
+            {"request": request, "error": "Tenant not available."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    existing = (
+        db.query(User)
+        .filter(User.tenant_id == tenant.id, User.email == email)
+        .first()
+    )
+    if existing:
+        return templates.TemplateResponse(
+            "signup.html",
+            {"request": request, "error": "Email already registered."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    user = create_user(db, email, password, tenant.id, RoleEnum.NORMAL, full_name=full_name)
+    token = issue_token(user, settings)
+    response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie("access_token", token, httponly=True, samesite="lax")
+    return response
+
+
+@router.post("/guest")
+def guest_access(
+    request: Request,
+    tenant_slug: str | None = Form(None),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Start a guest session and redirect to the dashboard."""
+    try:
+        tenant = _resolve_tenant(db, tenant_slug)
+    except ValueError:
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Guest access is unavailable."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    token, _ = issue_guest_token(tenant, settings)
     response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie("access_token", token, httponly=True, samesite="lax")
     return response
@@ -303,7 +390,7 @@ def quality_partial(request: Request, current_user: User = Depends(get_current_u
 @router.get("/admin")
 def admin_page(
     request: Request,
-    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+    current_user: User = Depends(get_current_user),
 ):
     """Render the admin user management page.
 
@@ -315,10 +402,13 @@ def admin_page(
         GET /admin for admin users.
     Inputs:
         request: FastAPI Request for template rendering context.
-        current_user: Admin user authorized by require_role.
+        current_user: Authenticated user for role-based access checks.
     Returns:
         TemplateResponse for the admin page.
     """
+    if current_user.role != RoleEnum.ADMIN:
+        return _access_denied(request, current_user)
+
     # Load all users in the current tenant for display.
     db = request.app.state.session_maker()
     users = db.query(User).filter(User.tenant_id == current_user.tenant_id).all()

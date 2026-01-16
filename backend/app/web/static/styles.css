@@ -42,6 +42,41 @@ body > div {
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.35);
 }
 
+.role-badge,
+.scope-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.role-admin {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fde68a;
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
+.role-user {
+  background: rgba(56, 189, 248, 0.18);
+  color: #bae6fd;
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.role-guest {
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.scope-badge {
+  background: rgba(15, 23, 42, 0.6);
+  color: rgba(226, 232, 240, 0.85);
+}
+
 .card {
   background: rgba(15, 23, 42, 0.7);
   border-radius: 1rem;
@@ -488,6 +523,81 @@ mark.search-hit {
   margin-bottom: 0.75rem;
 }
 
+.issues-chart {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.issues-bar-row {
+  text-align: left;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.45);
+  color: #e2e8f0;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.issues-bar-row:hover {
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.issues-bar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(226, 232, 240, 0.7);
+}
+
+.issues-bar-label {
+  font-weight: 600;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.issues-bar-value {
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.issues-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.7);
+  overflow: hidden;
+  margin-top: 0.45rem;
+}
+
+.issues-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.85), rgba(251, 191, 36, 0.9));
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.6);
+  color: rgba(226, 232, 240, 0.85);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.filter-chip:hover {
+  border-color: rgba(251, 191, 36, 0.5);
+  transform: translateY(-1px);
+}
+
 .legend-item {
   display: inline-flex;
   align-items: center;
@@ -545,6 +655,11 @@ mark.search-hit {
 .table-sort {
   cursor: pointer;
   user-select: none;
+}
+
+.results-table .issues-message {
+  white-space: normal;
+  min-width: 220px;
 }
 
 .skeleton-table {

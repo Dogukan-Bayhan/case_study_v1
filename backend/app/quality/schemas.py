@@ -82,3 +82,57 @@ class QualityIssueDetail(BaseModel):
     severity: list[str]
     raw_columns: dict[str, str]
     detected_at: str
+
+
+class IssuesAnalyticsKpis(BaseModel):
+    """Top-level KPIs for the issues analytics panel."""
+    issue_tx: int
+    issue_rows: int
+    top_severity: str | None = None
+
+
+class IssuesSeverityCount(BaseModel):
+    """Severity distribution entry for issues analytics."""
+    severity: str
+    count: int
+    pct: float
+
+
+class IssuesRuleCount(BaseModel):
+    """Rule distribution entry for issues analytics."""
+    rule: str
+    count: int
+    pct: float
+
+
+class IssuesColumnCount(BaseModel):
+    """Column distribution entry for issues analytics."""
+    column: str
+    count: int
+    pct: float
+
+
+class IssuesTrendPoint(BaseModel):
+    """Time-bucketed issue trend point."""
+    bucket: str
+    count: int
+
+
+class IssuesImpactItem(BaseModel):
+    """Summary of a high-impact issue rule."""
+    rule: str
+    severity: str | None = None
+    affected_tx: int
+    issue_rows: int
+    example_message: str | None = None
+
+
+class IssuesAnalyticsOut(BaseModel):
+    """Aggregated issues analytics payload for the quality UI."""
+    as_of: str
+    kpis: IssuesAnalyticsKpis
+    by_severity: list[IssuesSeverityCount]
+    by_rule: list[IssuesRuleCount]
+    by_column: list[IssuesColumnCount]
+    trend: list[IssuesTrendPoint]
+    top_issues: list[IssuesImpactItem]

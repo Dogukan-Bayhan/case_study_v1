@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% set title = "Access Denied" %}
+
+{% block content %}
+<section class="panel">
+  <div class="flex flex-col gap-3">
+    <p class="label">Access denied</p>
+    <h2 class="text-2xl font-semibold">You do not have permission to view this page.</h2>
+    <p class="text-sm text-slate-300">Your current role does not include access to this route.</p>
+    <div class="flex flex-wrap items-center gap-3 mt-4">
+      <a href="/" class="nav-link">Back to Dashboard</a>
+      <a href="/login" class="nav-link">Switch Account</a>
+    </div>
+  </div>
+</section>
+{% endblock %}

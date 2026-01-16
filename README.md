@@ -1,162 +1,242 @@
-# Multi-Tenant Analytics System
+# Data Warehouse & Analytics Platform
 
-This project ingests large CSV transaction data, validates it with a Polars-based ETL, stores analytics-ready facts in ClickHouse, and serves results through a FastAPI backend and a web UI. It is intentionally multi-tenant: every query is scoped so tenants only see their own data.
+## 1. Project Overview
 
-## What it does
+This project is a multi-tenant analytics platform for large, messy e-commerce transaction datasets. It ingests raw CSV data, runs a Polars-based ETL, writes analytics facts to ClickHouse, stores operational metadata and quality reports in PostgreSQL, and serves dashboards plus ad-hoc analytics through a FastAPI backend and web UI.
 
-- Ingests multi-million-row CSV datasets.
-- Normalizes schema and validates data quality during ETL.
-- Loads a clean fact table into ClickHouse (`fact_transactions_clean`).
-- Stores tenants, users, ETL runs, and quality findings in PostgreSQL.
-- Exposes analytics and transaction views via API and UI with server-side pagination.
+It solves the core case study problem: detect data quality issues at scale, make the data analytically safe, and present fast, scoped insights to different user roles without data leakage.
 
-## Architecture
+The architecture separates OLTP (PostgreSQL) from OLAP (ClickHouse) to keep operational metadata consistent while enabling sub-second analytics on millions of rows. This split also keeps the API stateless and horizontally scalable.
+
+Executive summary: an end-to-end data warehouse and analytics system that prioritizes correctness, quality visibility, and tenant isolation while remaining fast enough for interactive exploration on a large synthetic dataset.
+
+## 2. Dataset Description & Intent
+
+The dataset is defined in DATASET_README.pdf and is intentionally dirty by design:
+
+- File: large_dataset.csv
+- Size: ~1 GB
+- Rows: 5,000,000
+- Columns: 26
+- Content: e-commerce transaction data
+- Nature: synthetic data with intentional quality problems (typos, inconsistencies, anomalies)
+
+This project treats data quality as a first-class concern.
+
+The dataset exists to test both analytics correctness and the ability to detect and report real-world data quality issues, not just to compute aggregates.
+
+## 3. System Architecture
+
+PostgreSQL (OLTP):
+- Users, tenants, roles
+- ETL runs, quality reports, and findings
+
+ClickHouse (OLAP):
+- Analytics fact tables (clean, issue, all)
+- Raw audit table and issue rows table
+
+Why separation:
+- Operational metadata needs strict consistency and frequent updates.
+- Analytics needs columnar storage and fast aggregation at scale.
+
+Stateless API design:
+- JWT-based authentication
+- No server-side sessions
+- All scoping enforced per request
+
+Architecture diagram:
 
 ```mermaid
 flowchart LR
-  CSV[CSV Dataset] --> ETL[Polars ETL Pipeline]
-  ETL --> CH[(ClickHouse: fact_transactions_clean)]
-  ETL --> PG[(PostgreSQL: tenants, users, ETL runs, quality)]
-  API[FastAPI API] --> CH
+  CSV[large_dataset.csv] --> ETL[Polars ETL]
+  ETL --> CH[(ClickHouse: fact_transactions_* and issues)]
+  ETL --> PG[(PostgreSQL: tenants, users, runs, quality)]
+  UI[Web UI] --> API[FastAPI]
+  API --> CH
   API --> PG
-  UI[Transactions UI] --> API
 ```
 
-## Why ClickHouse
+Data flow:
+- Ingestion -> ETL -> Quality Rules -> Analytics -> UI
 
-ClickHouse is built for analytics at scale: columnar storage, fast aggregations, and efficient scans over wide fact tables. It is the right fit for transaction-level analytics on millions of rows.
+## 4. Authentication & Authorization Model
 
-## Why PostgreSQL
+Roles:
 
-PostgreSQL stores transactional metadata: tenants, users, roles, ETL runs, and quality findings. This data is relational, frequently updated, and requires strict consistency.
+ADMIN
+- Full system access
+- User management
+- Global analytics
 
-## Multi-tenancy and access model
+NORMAL USER
+- Authenticated
+- Owner-scoped analytics only
+- No admin privileges
 
-- Every fact row includes a `tenant_id`.
-- API requests are authenticated and scoped to the tenant.
-- Admin users see all tenant rows.
-- Normal users are additionally scoped by `owner_user_id`.
-- Guest users are read-only with smaller page-size limits.
+GUEST
+- Read-only
+- Demo and exploration role
 
-This enforces tenant isolation at both the API and data layers.
+Auth model:
+- JWT-based authentication for API and web UI.
+- Tokens include user id (sub) and tenant_id; guest tokens also include role and email.
+- Backend enforces tenant and role scoping on every request.
+- Frontend gating is only for UX; it does not replace authorization checks.
 
-## Pagination behavior
+## 5. ETL Pipeline & Data Flow
 
-The transactions endpoint is fully server-side:
+The ETL runs in batch mode and is optimized for large CSVs:
 
-- Parameters: `page` (1-based), `page_size` (alias: `pageSize`).
-- Offset: `(page - 1) * page_size`.
-- Sorting: `order_date`, `total_amount`, `quantity`.
-- Guests are capped to `page_size <= 25`.
+1. Stream CSV in batches to keep memory bounded.
+2. Normalize headers and parse types to a canonical schema.
+3. Assign tenant_id and owner_user_id for downstream scoping.
+4. Evaluate deterministic quality rules (missing data, mismatches, consistency checks).
+5. Write raw rows to ClickHouse raw audit table for traceability.
+6. Split output:
+   - Clean rows -> fact_transactions_clean
+   - Issue rows -> fact_transactions_issue
+   - All rows -> fact_transactions_all
+   - Issue details -> fact_transactions_issues
+7. Persist quality summary and findings in PostgreSQL.
 
-This keeps response times stable as dataset size grows.
+Issues are detected during ETL to keep analytics fast and to avoid recomputing validations at query time.
 
-## Data correctness guarantees
+## 6. Data Quality Framework
 
-- Required transaction columns are enforced after transformation.
-- Missing/blank ratios are tracked per column.
-- Parse failures are recorded for numeric and timestamp fields.
-- Duplicate transaction IDs are detected.
-- Outliers are computed post-load for sanity checks.
-- ClickHouse schema drift is handled by adding missing columns automatically.
+- Rule-based validation system executed during ETL.
+- Severity levels: error, warn, info.
+- Issues are deduplicated per row per rule code.
+- Findings are stored for audit and surfaced in the Quality UI.
 
-Quality summaries and findings are stored in PostgreSQL for auditing.
+Examples of detected problems:
+- Missing required fields
+- Duplicate transaction_id
+- Financial total mismatches (quantity, unit_price, discount, tax)
+- Geography inconsistencies (country-city, region-country)
+- Postal code format and phone-country plausibility (best effort)
+- Invalid status or payment method values
+- Category and department normalization issues
+- Temporal uniformity dataset-level warning
 
-## Test suites
+Clean data definition is intentionally strict; semantic issues are surfaced, not discarded.
 
-Black-box QA tests validate correctness without importing ETL internals:
+## 7. Analytics & Dashboards
 
-- ETL output correctness (required columns, null ratios).
-- ClickHouse integrity (data exists, critical fields healthy).
-- API pagination (offsets, non-overlap, `pageSize` behavior).
-- Multi-tenant isolation (tenant and owner filters match ClickHouse).
+Available pages:
+- Dashboard: KPI tiles and trends
+- Transactions: row-level explorer with server-side pagination
+- Quality: operational quality summary, issues explorer, and issues analytics
+- Analytics Explorer: ad-hoc metrics and dimensions with auto charts
 
-Benchmark tests measure ClickHouse performance and multi-tenant concurrency. See `BENCHMARK.md` for methodology and interpretation.
+Scope selection:
+- Analytics can be queried by ALL, CLEAN, or ISSUE scopes.
+- Normal users are restricted to CLEAN scope by backend enforcement.
 
-## Debugging data issues
+Note on uniform distributions:
+- The dataset is synthetic, so some distributions appear unusually uniform.
+- This is expected and documented in the dataset intent.
 
-If a column is missing or unexpectedly NULL:
+All analytics responses respect tenant and role scoping.
 
-1. Inspect CSV headers:
+## 8. Multi-Tenant & Parallel User Support
+
+Tenant isolation strategy:
+- Every fact row includes tenant_id.
+- Requests are scoped by tenant_id and, for normal users, owner_user_id.
+- Guest users are read-only and scoped to a tenant.
+
+Parallel user verification:
+- Automated QA tests validate tenant isolation and owner scoping.
+- A concurrent multi-user test issues requests across 3 tenants in parallel.
+- This validates correctness under concurrency, not throughput or load.
+
+## 9. API Overview
+
+Authentication:
+- POST /auth/login - issue JWT for existing user
+- POST /auth/signup - create NormalUser and issue token
+- POST /auth/guest - issue read-only guest token
+- GET /auth/me - return current identity and scope
+
+Analytics (authenticated; role-scoped):
+- GET /analytics/kpis
+- GET /analytics/timeseries
+- GET /analytics/top-products
+- GET /analytics/breakdown
+- GET /analytics/customer-segments
+- GET /analytics/transactions
+- GET /analytics/filter-options
+- POST /analytics/ad-hoc
+
+Quality (authenticated; role-scoped):
+- GET /quality/latest
+- GET /quality/overview
+- GET /quality/findings
+- GET /quality/issues
+- GET /quality/issues/{transaction_id}
+- GET /quality/issues-analytics
+
+Admin-only:
+- GET /admin/users
+- POST /admin/users
+
+Interactive OpenAPI docs are available at /docs.
+
+## 10. Running the Project
+
+Prerequisites:
+- Docker and Docker Compose
+
+Steps:
+
+1. Build and start services:
    ```bash
-   Get-Content -TotalCount 1 data\large_dataset.csv
+   docker compose up -d --build
    ```
-2. Run a dry-run ETL:
+
+2. Ensure the dataset is available at ./data/large_dataset.csv (mounted to /data in the API container).
+
+3. Run ETL for a tenant:
    ```bash
-   docker compose exec api python -m app.etl.run --tenant alpha-store --csv /data/large_dataset.csv --dry-run
-   ```
-3. Inspect ETL logs for:
-   - "Explicit CSV mapping"
-   - "Transformed schema"
-   - "Columns with >95% nulls"
-4. Inspect ClickHouse schema:
-   ```bash
-   docker compose exec clickhouse clickhouse-client --query "DESCRIBE TABLE analytics.fact_transactions_clean"
+   docker compose exec api python -m app.etl.run --tenant alpha-store --csv /data/large_dataset.csv
    ```
 
-## Seeded tenants and users
+4. Open the UI:
+   - http://localhost:8000
 
-Initial seed creates two tenants with three users each:
-
-- Tenant `alpha-store`
-  - `admin@alpha.example.com` / `password123` (Admin)
-  - `user@alpha.example.com` / `password123` (NormalUser)
-  - `guest@alpha.example.com` / `password123` (Guest)
-- Tenant `beta-shop`
-  - `admin@beta.example.com` / `password123` (Admin)
-  - `user@beta.example.com` / `password123` (NormalUser)
-  - `guest@beta.example.com` / `password123` (Guest)
-
-## Run the ETL
-
-The API container mounts `./data` to `/data`:
+Optional test user creation (for QA concurrency tests):
 
 ```bash
-docker compose exec api python -m app.etl.run --tenant alpha-store --csv /data/large_dataset.csv
+docker compose exec api python -m app.scripts.create_test_users
 ```
 
-## Run tests
+## 11. Testing Strategy
 
-Full suite:
+The test suite focuses on correctness rather than load testing:
+
+- Unit-level checks for quality computations.
+- Integration tests for ETL output and ClickHouse integrity.
+- QA tests for pagination, tenant isolation, and role scoping.
+- Parallel multi-tenant concurrency test for correctness under simultaneous requests.
+- Optional benchmarks for ClickHouse query behavior.
+
+Run tests:
 
 ```bash
 docker compose exec api pytest
 ```
 
-QA suite only:
+QA-only:
 
 ```bash
-docker compose exec api pytest backend/app/tests/qa
+docker compose exec api pytest app/tests/qa
 ```
 
-Benchmark suite:
+## 12. Known Limitations & Design Trade-offs
 
-```bash
-docker compose exec api pytest app/tests/benchmarks
-```
+- Synthetic data limits realism; distributions can appear uniform by design.
+- API documentation is limited to OpenAPI and README, not a full external spec.
+- UI accessibility has not been formally audited.
 
-Optional test environment variables:
+These trade-offs keep the scope focused on correctness, architecture, and evaluation criteria for the case study timeline.
 
-- `ANALYTICS_API_BASE_URL` (default: `http://localhost:8000`)
-- `ANALYTICS_API_TIMEOUT` (default: `15`)
-- `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`
-- `QA_PASSWORD` and overrides like `QA_ALPHA_ADMIN_EMAIL`
-- `QA_REQUIRED_MAX_NULL_RATIO`, `QA_CRITICAL_MAX_NULL_RATIO`
-- `BENCHMARK_ITERATIONS`, `BENCHMARK_PAGE_SIZE`
-- `QA_CONCURRENT_REQUESTS_PER_TENANT`, `QA_MAX_LATENCY_SECONDS`, `QA_TENANT_PAGE_SIZE`
-
-## Project layout
-
-```text
-backend/app/
-  main.py
-  core/       # config, logging, security, dependencies
-  db/         # models, session, migrations, clickhouse
-  auth/       # auth routes and services
-  tenants/    # admin user management
-  etl/        # ETL pipeline and CLI
-  quality/    # quality API routes
-  analytics/  # analytics API routes
-  web/        # UI templates and routes
-  tests/      # pytest suites
-```

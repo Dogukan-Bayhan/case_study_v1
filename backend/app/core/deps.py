@@ -3,6 +3,8 @@
 from collections.abc import Iterator
 from typing import Callable
 
+from dataclasses import dataclass
+
 from fastapi import Depends, HTTPException, Request, status
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -11,6 +13,16 @@ from app.core.config import Settings
 from app.core.security import oauth2_scheme
 from app.db.clickhouse import get_clickhouse_client
 from app.db.models import RoleEnum, User
+
+
+@dataclass
+class GuestUser:
+    """Lightweight user representation for guest sessions."""
+    id: int
+    tenant_id: int
+    email: str
+    role: RoleEnum
+    is_active: bool = True
 
 
 def get_settings(request: Request) -> Settings:
@@ -89,7 +101,7 @@ def get_current_user(
     token: str | None = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> User:
+) -> User | GuestUser:
     """Resolve the authenticated user from JWT/cookie for tenant scoping.
 
     Business purpose:
@@ -120,10 +132,23 @@ def get_current_user(
         # Decode JWT to extract user identity for tenant scoping.
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
         user_id = payload.get("sub")
+        role = payload.get("role")
+        tenant_id = payload.get("tenant_id")
         if user_id is None:
             raise credentials_exception
     except JWTError as exc:
         raise credentials_exception from exc
+
+    if role == RoleEnum.GUEST.value:
+        if tenant_id is None:
+            raise credentials_exception
+        email = payload.get("email") or "guest@demo.local"
+        return GuestUser(
+            id=0,
+            tenant_id=int(tenant_id),
+            email=email,
+            role=RoleEnum.GUEST,
+        )
 
     # Look up the user and ensure the account is active.
     user = db.get(User, int(user_id))

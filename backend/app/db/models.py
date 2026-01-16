@@ -42,6 +42,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     email: Mapped[str] = mapped_column(String(255), index=True)
+    full_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     hashed_password: Mapped[str] = mapped_column(String(255))
     role: Mapped[RoleEnum] = mapped_column(Enum(RoleEnum, native_enum=False))
     is_active: Mapped[bool] = mapped_column(default=True)

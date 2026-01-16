@@ -17,6 +17,8 @@ class UserOut(BaseModel):
     tenant_id: int
     email: EmailStr
     role: RoleEnum
+    owner_user_id: int | None = None
+    full_name: str | None = None
 
 
 class UserCreate(BaseModel):
@@ -24,4 +26,17 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
     role: RoleEnum
+    tenant_slug: str | None = None
+
+
+class SignupRequest(BaseModel):
+    """Input payload for normal-user sign up."""
+    email: EmailStr
+    password: str = Field(min_length=8)
+    full_name: str = Field(min_length=1)
+    tenant_slug: str | None = None
+
+
+class GuestRequest(BaseModel):
+    """Input payload for guest access."""
     tenant_slug: str | None = None

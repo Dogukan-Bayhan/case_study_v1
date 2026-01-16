@@ -9,7 +9,15 @@ from app.core.deps import get_clickhouse, get_current_user, get_db, get_settings
 from app.core.config import Settings
 from app.db.clickhouse import issues_table, raw_table
 from app.db.models import QualityFinding, QualityReport, User
+from app.analytics.cache import TTLCache
 from app.quality.schemas import (
+    IssuesAnalyticsKpis,
+    IssuesAnalyticsOut,
+    IssuesColumnCount,
+    IssuesImpactItem,
+    IssuesRuleCount,
+    IssuesSeverityCount,
+    IssuesTrendPoint,
     QualityFindingOut,
     QualityIssueDetail,
     QualityIssueItem,
@@ -22,6 +30,33 @@ from app.quality.schemas import (
 )
 
 router = APIRouter(prefix="/quality", tags=["quality"])
+
+ISSUES_ANALYTICS_CACHE = TTLCache(ttl_seconds=20)
+ISSUES_ANALYTICS_TOP_N = 8
+RULE_COLUMN_MAP: dict[str, list[str]] = {
+    "DUPLICATE_TRANSACTION_ID": ["transaction_id"],
+    "COUNTRY_CITY_MISMATCH": ["country", "city"],
+    "REGION_COUNTRY_MISMATCH": ["region_code"],
+    "POSTAL_CODE_INVALID": ["postal_code"],
+    "PHONE_COUNTRY_MISMATCH": ["phone"],
+    "FINANCIAL_TOTAL_MISMATCH": ["total_amount"],
+    "PRICE_MISMATCH": ["total_amount"],
+    "STATUS_INVALID": ["status"],
+    "PAYMENT_METHOD_INVALID": ["payment_method"],
+    "STATUS_PAYMENT_INCONSISTENT": ["status", "payment_method"],
+    "CATEGORY_INVALID": ["category"],
+    "DEPARTMENT_INVALID": ["department"],
+    "SUSPECTED_TYPO": ["country", "city"],
+}
+
+
+def _column_rule_map() -> dict[str, list[str]]:
+    """Build a column to rule mapping for column-level issue filters."""
+    column_rules: dict[str, list[str]] = {}
+    for rule_code, columns in RULE_COLUMN_MAP.items():
+        for column in columns:
+            column_rules.setdefault(column, []).append(rule_code)
+    return column_rules
 
 
 @router.get("/latest", response_model=QualityReportOut)
@@ -289,6 +324,7 @@ def list_issues(
     page_size: int = Query(50, ge=1, le=100),
     severity: str | None = Query(default=None),
     rule_code: str | None = Query(default=None),
+    column: str | None = Query(default=None),
     transaction_id: str | None = Query(default=None),
     sort_by: str = Query("detected_at"),
     sort_dir: str = Query("desc"),
@@ -342,6 +378,15 @@ def list_issues(
         # issues is stored as an array of rule codes.
         conditions.append("has(issues, %(rule_code)s)")
         params["rule_code"] = rule_code
+    if column:
+        column_rules = _column_rule_map().get(column)
+        if column_rules:
+            rule_conditions = []
+            for idx, rule in enumerate(column_rules):
+                key = f"column_rule_{idx}"
+                rule_conditions.append(f"has(issues, %({key})s)")
+                params[key] = rule
+            conditions.append(f"({' OR '.join(rule_conditions)})")
     if transaction_id:
         conditions.append("transaction_id = %(transaction_id)s")
         params["transaction_id"] = transaction_id
@@ -441,3 +486,164 @@ def issue_detail(
         raw_columns=raw_columns or {},
         detected_at=_isoformat(detected_at),
     )
+
+
+@router.get("/issues-analytics", response_model=IssuesAnalyticsOut)
+def issues_analytics(
+    current_user: User = Depends(get_current_user),
+    client=Depends(get_clickhouse),
+    settings: Settings = Depends(get_settings),
+    db: Session = Depends(get_db),
+) -> IssuesAnalyticsOut:
+    """Return aggregated issue analytics for the quality dashboard."""
+    tenant_id = current_user.tenant_id
+    cache_key = f"issues_analytics:{tenant_id}"
+    cached = ISSUES_ANALYTICS_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    issues_table_name = issues_table(settings)
+    issue_rows, issue_tx = client.execute(
+        f"""
+        SELECT count() AS issue_rows, uniqExact(transaction_id) AS issue_tx
+        FROM {issues_table_name}
+        PREWHERE tenant_id = %(tenant_id)s
+        """,
+        {"tenant_id": tenant_id},
+    )[0]
+    issue_rows = int(issue_rows)
+    issue_tx = int(issue_tx)
+
+    severity_rule_rows = client.execute(
+        f"""
+        SELECT pair.1 AS rule_code, pair.2 AS severity, count() AS count
+        FROM (
+            SELECT arrayJoin(arrayZip(issues, severity)) AS pair
+            FROM {issues_table_name}
+            PREWHERE tenant_id = %(tenant_id)s
+        )
+        GROUP BY rule_code, severity
+        """,
+        {"tenant_id": tenant_id},
+    )
+    rule_counts: dict[str, int] = {}
+    severity_counts = {"error": 0, "warn": 0, "info": 0}
+    rule_severity_counts: dict[str, dict[str, int]] = {}
+    for rule_code, severity, count in severity_rule_rows:
+        rule = str(rule_code)
+        sev = str(severity)
+        count_value = int(count)
+        rule_counts[rule] = rule_counts.get(rule, 0) + count_value
+        severity_counts[sev] = severity_counts.get(sev, 0) + count_value
+        rule_severity_counts.setdefault(rule, {})[sev] = count_value
+
+    total_occurrences = sum(rule_counts.values())
+    by_severity = [
+        IssuesSeverityCount(
+            severity=severity,
+            count=severity_counts.get(severity, 0),
+            pct=(severity_counts.get(severity, 0) / total_occurrences) if total_occurrences else 0.0,
+        )
+        for severity in ("error", "warn", "info")
+    ]
+
+    by_rule = [
+        IssuesRuleCount(
+            rule=rule,
+            count=count,
+            pct=(count / total_occurrences) if total_occurrences else 0.0,
+        )
+        for rule, count in sorted(rule_counts.items(), key=lambda item: item[1], reverse=True)[:ISSUES_ANALYTICS_TOP_N]
+    ]
+
+    column_counts: dict[str, int] = {}
+    for rule, count in rule_counts.items():
+        for column in RULE_COLUMN_MAP.get(rule, []):
+            column_counts[column] = column_counts.get(column, 0) + count
+    by_column = [
+        IssuesColumnCount(
+            column=column,
+            count=count,
+            pct=(count / total_occurrences) if total_occurrences else 0.0,
+        )
+        for column, count in sorted(column_counts.items(), key=lambda item: item[1], reverse=True)[:ISSUES_ANALYTICS_TOP_N]
+    ]
+
+    trend_rows = client.execute(
+        f"""
+        SELECT toStartOfWeek(detected_at) AS bucket, count() AS count
+        FROM {issues_table_name}
+        PREWHERE tenant_id = %(tenant_id)s
+        GROUP BY bucket
+        ORDER BY bucket
+        """,
+        {"tenant_id": tenant_id},
+    )
+    trend = [
+        IssuesTrendPoint(bucket=_isoformat(bucket), count=int(count))
+        for bucket, count in trend_rows
+    ]
+
+    top_severity = None
+    if total_occurrences:
+        top_severity = max(severity_counts.items(), key=lambda item: item[1])[0]
+
+    report = (
+        db.query(QualityReport)
+        .filter(QualityReport.tenant_id == tenant_id)
+        .order_by(QualityReport.created_at.desc())
+        .first()
+    )
+    message_lookup: dict[str, str] = {}
+    if report:
+        findings = db.query(QualityFinding).filter(QualityFinding.report_id == report.id).all()
+        for finding in findings:
+            if finding.check not in message_lookup:
+                message_lookup[finding.check] = finding.message
+
+    affected_rows = client.execute(
+        f"""
+        SELECT rule_code, uniqExact(transaction_id) AS affected_tx
+        FROM (
+            SELECT transaction_id, arrayJoin(arrayDistinct(issues)) AS rule_code
+            FROM {issues_table_name}
+            PREWHERE tenant_id = %(tenant_id)s
+        )
+        GROUP BY rule_code
+        ORDER BY affected_tx DESC
+        LIMIT %(limit)s
+        """,
+        {"tenant_id": tenant_id, "limit": ISSUES_ANALYTICS_TOP_N},
+    )
+    top_issues = []
+    for rule_code, affected_tx in affected_rows:
+        rule = str(rule_code)
+        severity_counts_for_rule = rule_severity_counts.get(rule, {})
+        top_rule_severity = None
+        if severity_counts_for_rule:
+            top_rule_severity = max(severity_counts_for_rule.items(), key=lambda item: item[1])[0]
+        top_issues.append(
+            IssuesImpactItem(
+                rule=rule,
+                severity=top_rule_severity,
+                affected_tx=int(affected_tx),
+                issue_rows=rule_counts.get(rule, 0),
+                example_message=message_lookup.get(rule),
+            )
+        )
+
+    payload = IssuesAnalyticsOut(
+        as_of=datetime.utcnow().isoformat(),
+        kpis=IssuesAnalyticsKpis(
+            issue_tx=issue_tx,
+            issue_rows=issue_rows,
+            top_severity=top_severity,
+        ),
+        by_severity=by_severity,
+        by_rule=by_rule,
+        by_column=by_column,
+        trend=trend,
+        top_issues=top_issues,
+    )
+    ISSUES_ANALYTICS_CACHE.set(cache_key, payload)
+    return payload

@@ -631,28 +631,30 @@
       state.offset += state.limit;
       runAnalysis();
     });
-    exportButton.addEventListener("click", () => {
-      if (!state.columns.length || !state.rows.length) return;
-      const header = state.columns.map((column) => `"${column.label.replace(/\"/g, '\"\"')}"`).join(",");
-      const rows = state.rows.map((row) => {
-        return state.columns.map((column) => {
-          const raw = row[column.key];
-          if (raw === null || raw === undefined) return "";
-          const value = String(raw).replace(/\"/g, '\"\"');
-          return `"${value}"`;
-        }).join(",");
-      }).join("\n");
-      const csv = `${header}\n${rows}`;
-      const blob = new Blob([csv], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `slice_dice_${new Date().toISOString().slice(0, 10)}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    });
+    if (exportButton) {
+      exportButton.addEventListener("click", () => {
+        if (!state.columns.length || !state.rows.length) return;
+        const header = state.columns.map((column) => `"${column.label.replace(/\"/g, '\"\"')}"`).join(",");
+        const rows = state.rows.map((row) => {
+          return state.columns.map((column) => {
+            const raw = row[column.key];
+            if (raw === null || raw === undefined) return "";
+            const value = String(raw).replace(/\"/g, '\"\"');
+            return `"${value}"`;
+          }).join(",");
+        }).join("\n");
+        const csv = `${header}\n${rows}`;
+        const blob = new Blob([csv], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `slice_dice_${new Date().toISOString().slice(0, 10)}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      });
+    }
     resultLimit.addEventListener("change", () => {
       state.limit = Number(resultLimit.value);
       state.offset = 0;

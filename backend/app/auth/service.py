@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.db.models import User
+from app.db.models import RoleEnum, Tenant, User
 
 
 def authenticate_user(db: Session, email: str, password: str) -> User | None:
@@ -55,7 +55,39 @@ def issue_token(user: User, settings: Settings) -> str:
     return create_access_token({"sub": str(user.id), "tenant_id": user.tenant_id}, settings)
 
 
-def create_user(db: Session, email: str, password: str, tenant_id: int, role: str) -> User:
+def issue_guest_token(tenant: Tenant, settings: Settings) -> tuple[str, str]:
+    """Issue a signed JWT for a temporary guest session.
+
+    Business purpose:
+        Provide read-only guest access without creating a persistent user.
+    Why it exists:
+        Guests should explore data without account creation.
+    Where used:
+        Guest login flows in API and web UI.
+    Inputs:
+        tenant: Tenant used to scope guest access.
+        settings: Security settings used to sign the token.
+    Returns:
+        Tuple of (token, guest email) for UI display and /me response.
+    """
+    guest_email = f"guest@{tenant.slug}.example.com"
+    payload = {
+        "sub": "guest",
+        "tenant_id": tenant.id,
+        "role": RoleEnum.GUEST.value,
+        "email": guest_email,
+    }
+    return create_access_token(payload, settings), guest_email
+
+
+def create_user(
+    db: Session,
+    email: str,
+    password: str,
+    tenant_id: int,
+    role: str,
+    full_name: str | None = None,
+) -> User:
     """Create a new tenant-scoped user with a hashed password.
 
     Business purpose:
@@ -75,7 +107,13 @@ def create_user(db: Session, email: str, password: str, tenant_id: int, role: st
     """
     # Hash the password before storing to avoid plaintext persistence.
     hashed = get_password_hash(password)
-    user = User(email=email, hashed_password=hashed, tenant_id=tenant_id, role=role)
+    user = User(
+        email=email,
+        full_name=full_name,
+        hashed_password=hashed,
+        tenant_id=tenant_id,
+        role=role,
+    )
     # Persist the user and refresh to populate generated fields.
     db.add(user)
     db.commit()

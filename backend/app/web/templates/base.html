@@ -15,13 +15,31 @@
           <div>
             <p class="text-amber-300 uppercase tracking-[0.2em] text-xs">Multi-tenant analytics</p>
             <h1 class="text-3xl md:text-4xl font-bold">{{ title or "Dashboard" }}</h1>
+            {% if user is defined %}
+              <div class="flex flex-wrap items-center gap-2 mt-3 text-xs">
+                {% if user.role == "admin" %}
+                  <span class="role-badge role-admin">Admin</span>
+                {% elif user.role == "guest" %}
+                  <span class="role-badge role-guest">Guest</span>
+                {% else %}
+                  <span class="role-badge role-user">User</span>
+                {% endif %}
+                {% if user.role == "normal" %}
+                  <span class="scope-badge">My Data</span>
+                {% elif user.role == "guest" %}
+                  <span class="scope-badge">Read-only Demo</span>
+                {% endif %}
+              </div>
+            {% endif %}
           </div>
           <nav class="flex gap-4 text-sm">
             {% if user is defined %}
               <a href="/" class="nav-link">Dashboard</a>
-              <a href="/slice-dice" class="nav-link">Slice &amp; Dice</a>
+              <a href="/slice-dice" class="nav-link">Analytics Explorer</a>
               <a href="/quality" class="nav-link">Quality</a>
-              <a href="/transactions" class="nav-link">Transactions</a>
+              {% if user.role != "guest" %}
+                <a href="/transactions" class="nav-link">Transactions</a>
+              {% endif %}
               {% if user.role == "admin" %}
                 <a href="/admin" class="nav-link">Admin</a>
               {% endif %}

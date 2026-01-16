@@ -101,6 +101,97 @@
   </div>
 </section>
 
+<section class="panel mt-6" id="issues-analytics">
+  <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+    <div>
+      <p class="label">Issues Analytics</p>
+      <p class="text-sm text-slate-300">Spot concentration and severity mix for issue activity.</p>
+    </div>
+    <span id="issues-analytics-status" class="text-xs text-slate-400">Loading...</span>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mt-6">
+    <div class="stat">
+      <p class="label">Issue Transactions</p>
+      <p class="value" id="issues-kpi-tx">--</p>
+    </div>
+    <div class="stat">
+      <p class="label">Issue Rows</p>
+      <p class="value" id="issues-kpi-rows">--</p>
+    </div>
+    <div class="stat">
+      <p class="label">% Transactions with Issues</p>
+      <p class="value" id="issues-kpi-pct">--</p>
+    </div>
+    <div class="stat">
+      <p class="label">Top Severity</p>
+      <p class="value" id="issues-kpi-top">--</p>
+    </div>
+  </div>
+
+  <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
+    <div id="issues-active-filters" class="flex flex-wrap gap-2"></div>
+    <button id="issues-clear-filters" class="nav-link text-sm hidden">Clear filters</button>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+    <div class="card">
+      <p class="label">Issues by Severity</p>
+      <div id="issues-by-severity" class="mt-4 issues-chart">
+        <div class="skeleton skeleton-block"></div>
+        <div class="skeleton skeleton-block mt-3"></div>
+        <div class="skeleton skeleton-block mt-3"></div>
+      </div>
+    </div>
+    <div class="card">
+      <p class="label">Issues by Rule</p>
+      <div id="issues-by-rule" class="mt-4 issues-chart">
+        <div class="skeleton skeleton-block"></div>
+        <div class="skeleton skeleton-block mt-3"></div>
+        <div class="skeleton skeleton-block mt-3"></div>
+      </div>
+    </div>
+    <div class="card">
+      <p class="label">Issues by Column</p>
+      <div id="issues-by-column" class="mt-4 issues-chart">
+        <div class="skeleton skeleton-block"></div>
+        <div class="skeleton skeleton-block mt-3"></div>
+        <div class="skeleton skeleton-block mt-3"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt-6">
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+      <div>
+        <p class="label">Most Impactful Issues</p>
+        <p class="text-sm text-slate-300">High-frequency rules with the broadest transaction impact.</p>
+      </div>
+      <a href="#quality-issues" class="nav-link text-sm">View in Issues Explorer</a>
+    </div>
+    <div class="table-wrapper mt-4">
+      <div class="table-scroll">
+        <table class="results-table" id="issues-impact-table">
+          <thead>
+            <tr>
+              <th class="table-sort" data-sort="rule">Rule</th>
+              <th class="table-sort" data-sort="severity">Severity</th>
+              <th class="table-sort" data-sort="affected_tx">Affected Transactions</th>
+              <th class="table-sort" data-sort="issue_rows">Issue Rows</th>
+              <th>Example Message</th>
+            </tr>
+          </thead>
+          <tbody id="issues-impact-body">
+            <tr>
+              <td colspan="5" class="text-center text-slate-400">Loading issues analytics...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="panel mt-6" hx-get="/quality/partial" hx-trigger="load">
   <h2 class="panel-title">Findings</h2>
   <div class="mt-4" id="findings">
@@ -137,6 +228,23 @@
             <option value="PRICE_MISMATCH"></option>
             <option value="DUPLICATE_TRANSACTION_ID"></option>
             <option value="SUSPECTED_TYPO"></option>
+          </datalist>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-slate-400" for="dq-column-filter">Column</label>
+          <input id="dq-column-filter" list="dq-column-codes" class="bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1 text-slate-100" placeholder="total_amount" />
+          <datalist id="dq-column-codes">
+            <option value="transaction_id"></option>
+            <option value="country"></option>
+            <option value="city"></option>
+            <option value="region_code"></option>
+            <option value="postal_code"></option>
+            <option value="phone"></option>
+            <option value="total_amount"></option>
+            <option value="status"></option>
+            <option value="payment_method"></option>
+            <option value="category"></option>
+            <option value="department"></option>
           </datalist>
         </div>
         <div class="flex flex-col gap-1">
@@ -206,14 +314,23 @@
 <script>
   const overviewStatus = document.getElementById("overview-status");
   const issuesStatus = document.getElementById("issues-status");
+  const issuesAnalyticsStatus = document.getElementById("issues-analytics-status");
+  const issuesActiveFilters = document.getElementById("issues-active-filters");
+  const issuesClearFilters = document.getElementById("issues-clear-filters");
   const dqState = {
     page: 1,
     pageSize: 50,
     severity: "",
     ruleCode: "",
+    column: "",
     transactionId: "",
     sortBy: "detected_at",
     sortDir: "desc",
+  };
+  const issuesAnalyticsState = {
+    data: null,
+    totalRaw: null,
+    topIssuesSort: { key: "affected_tx", dir: "desc" },
   };
   const ruleDescriptions = {
     MISSING_REQUIRED: "Required field missing in raw CSV.",
@@ -224,6 +341,10 @@
 
   function formatNumber(value) {
     return new Intl.NumberFormat().format(value);
+  }
+
+  function formatPercent(value) {
+    return `${Math.round(value * 100)}%`;
   }
 
   function setDonut(cleanCount, issueCount) {
@@ -301,6 +422,213 @@
     });
   }
 
+  function updateIssuePct() {
+    const pctEl = document.getElementById("issues-kpi-pct");
+    if (!issuesAnalyticsState.data) {
+      pctEl.textContent = "--";
+      return;
+    }
+    const issueTx = issuesAnalyticsState.data.kpis?.issue_tx ?? 0;
+    const totalRaw = issuesAnalyticsState.totalRaw;
+    if (totalRaw === null) {
+      pctEl.textContent = "--";
+      return;
+    }
+    if (totalRaw === 0) {
+      pctEl.textContent = "0%";
+      return;
+    }
+    pctEl.textContent = formatPercent(issueTx / totalRaw);
+  }
+
+  function updateIssueFilterChips() {
+    issuesActiveFilters.innerHTML = "";
+    const chips = [];
+    if (dqState.severity) chips.push({ key: "severity", value: dqState.severity });
+    if (dqState.ruleCode) chips.push({ key: "rule", value: dqState.ruleCode });
+    if (dqState.column) chips.push({ key: "column", value: dqState.column });
+
+    if (!chips.length) {
+      issuesClearFilters.classList.add("hidden");
+      return;
+    }
+
+    chips.forEach((chip) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "filter-chip";
+      button.dataset.filter = chip.key;
+      button.textContent = `${chip.key}:${chip.value}`;
+      button.addEventListener("click", () => {
+        if (chip.key === "severity") dqState.severity = "";
+        if (chip.key === "rule") dqState.ruleCode = "";
+        if (chip.key === "column") dqState.column = "";
+        document.getElementById("dq-severity-filter").value = dqState.severity;
+        document.getElementById("dq-rule-filter").value = dqState.ruleCode;
+        document.getElementById("dq-column-filter").value = dqState.column;
+        loadIssues(1);
+        updateIssueFilterChips();
+      });
+      issuesActiveFilters.appendChild(button);
+    });
+
+    issuesClearFilters.classList.remove("hidden");
+  }
+
+  function applyIssueFilters(next) {
+    if (next.severity !== undefined) dqState.severity = next.severity;
+    if (next.rule !== undefined) dqState.ruleCode = next.rule;
+    if (next.column !== undefined) dqState.column = next.column;
+    document.getElementById("dq-severity-filter").value = dqState.severity;
+    document.getElementById("dq-rule-filter").value = dqState.ruleCode;
+    document.getElementById("dq-column-filter").value = dqState.column;
+    loadIssues(1);
+    updateIssueFilterChips();
+  }
+
+  function clearIssueFilters() {
+    dqState.severity = "";
+    dqState.ruleCode = "";
+    dqState.column = "";
+    document.getElementById("dq-severity-filter").value = "";
+    document.getElementById("dq-rule-filter").value = "";
+    document.getElementById("dq-column-filter").value = "";
+    loadIssues(1);
+    updateIssueFilterChips();
+  }
+
+  function renderIssuesBars(container, items, onClick) {
+    container.innerHTML = "";
+    if (!items.length) {
+      container.innerHTML = '<p class="empty-state">No issues detected.</p>';
+      return;
+    }
+    const total = items.reduce((sum, item) => sum + (item.count || 0), 0);
+    const maxValue = Math.max(1, ...items.map((item) => item.count || 0));
+    items.forEach((item) => {
+      const label = item.label;
+      const count = item.count || 0;
+      const pct = item.pct ?? (total ? count / total : 0);
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "issues-bar-row";
+      row.title = `${label}: ${formatNumber(count)} (${formatPercent(pct)})`;
+      row.innerHTML = `
+        <div class="issues-bar-top">
+          <span class="issues-bar-label">${label}</span>
+          <span class="issues-bar-value">${formatNumber(count)} (${formatPercent(pct)})</span>
+        </div>
+        <div class="issues-bar">
+          <span class="issues-bar-fill" style="width: ${(count / maxValue) * 100}%"></span>
+        </div>
+      `;
+      if (onClick) {
+        row.addEventListener("click", () => onClick(item));
+      }
+      container.appendChild(row);
+    });
+  }
+
+  function renderIssuesSeverity(items) {
+    const container = document.getElementById("issues-by-severity");
+    const mapped = (items || []).map((item) => {
+      const label = item.severity === "warn" ? "Warning" : item.severity === "info" ? "Info" : "Error";
+      return {
+        label,
+        severity: item.severity,
+        count: item.count ?? 0,
+        pct: item.pct ?? 0,
+      };
+    });
+    renderIssuesBars(container, mapped, (item) => applyIssueFilters({ severity: item.severity }));
+  }
+
+  function renderIssuesRules(items) {
+    const container = document.getElementById("issues-by-rule");
+    const mapped = (items || []).map((item) => ({
+      label: item.rule,
+      rule: item.rule,
+      count: item.count ?? 0,
+      pct: item.pct ?? 0,
+    }));
+    renderIssuesBars(container, mapped, (item) => applyIssueFilters({ rule: item.rule }));
+  }
+
+  function renderIssuesColumns(items) {
+    const container = document.getElementById("issues-by-column");
+    const mapped = (items || []).map((item) => ({
+      label: item.column,
+      column: item.column,
+      count: item.count ?? 0,
+      pct: item.pct ?? 0,
+    }));
+    renderIssuesBars(container, mapped, (item) => applyIssueFilters({ column: item.column }));
+  }
+
+  function sortTopIssues(items) {
+    const { key, dir } = issuesAnalyticsState.topIssuesSort;
+    const sorted = [...items].sort((a, b) => {
+      if (key === "rule" || key === "severity") {
+        return String(a[key] || "").localeCompare(String(b[key] || ""));
+      }
+      return (a[key] || 0) - (b[key] || 0);
+    });
+    return dir === "asc" ? sorted : sorted.reverse();
+  }
+
+  function renderTopIssuesTable(items) {
+    const body = document.getElementById("issues-impact-body");
+    body.innerHTML = "";
+    const sorted = sortTopIssues(items || []);
+    if (!sorted.length) {
+      body.innerHTML = '<tr><td colspan="5" class="text-center text-slate-400">No issues detected.</td></tr>';
+      return;
+    }
+    sorted.forEach((item) => {
+      const severity = item.severity || "info";
+      const className = severity === "error" ? "badge-error" : severity === "warn" ? "badge-warn" : "badge-info";
+      const message = item.example_message || "Rule triggered.";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${item.rule}</td>
+        <td><span class="badge ${className}">${severity}</span></td>
+        <td>${formatNumber(item.affected_tx)}</td>
+        <td>${formatNumber(item.issue_rows)}</td>
+        <td class="issues-message text-slate-300">${message}</td>
+      `;
+      body.appendChild(tr);
+    });
+  }
+
+  async function loadIssuesAnalytics() {
+    issuesAnalyticsStatus.textContent = "Loading...";
+    try {
+      const response = await fetch("/quality/issues-analytics");
+      if (!response.ok) {
+        throw new Error("Failed to load issues analytics");
+      }
+      const data = await response.json();
+      issuesAnalyticsState.data = data;
+      document.getElementById("issues-kpi-tx").textContent = formatNumber(data.kpis?.issue_tx ?? 0);
+      document.getElementById("issues-kpi-rows").textContent = formatNumber(data.kpis?.issue_rows ?? 0);
+      const topSeverity = data.kpis?.top_severity || "--";
+      document.getElementById("issues-kpi-top").textContent = topSeverity;
+      updateIssuePct();
+      renderIssuesSeverity(data.by_severity || []);
+      renderIssuesRules(data.by_rule || []);
+      renderIssuesColumns(data.by_column || []);
+      renderTopIssuesTable(data.top_issues || []);
+      issuesAnalyticsStatus.textContent = `Updated ${new Date(data.as_of).toLocaleString()}`;
+    } catch (err) {
+      issuesAnalyticsStatus.textContent = "Failed to load issues analytics";
+      document.getElementById("issues-by-severity").innerHTML = '<p class="empty-state">Failed to load.</p>';
+      document.getElementById("issues-by-rule").innerHTML = '<p class="empty-state">Failed to load.</p>';
+      document.getElementById("issues-by-column").innerHTML = '<p class="empty-state">Failed to load.</p>';
+      document.getElementById("issues-impact-body").innerHTML =
+        '<tr><td colspan="5" class="text-center text-slate-400">Failed to load.</td></tr>';
+    }
+  }
+
   async function loadOverview() {
     overviewStatus.textContent = "Loading...";
     try {
@@ -312,6 +640,7 @@
       const totalRaw = data.total_raw_tx ?? data.total_raw_rows ?? 0;
       const cleanTx = data.clean_tx ?? data.total_clean_rows ?? 0;
       const issueTx = data.issue_tx ?? data.total_issue_rows ?? 0;
+      issuesAnalyticsState.totalRaw = totalRaw;
       const percentCleanValue = data.pct_clean ?? (totalRaw === 0 ? 0 : cleanTx / totalRaw);
       document.getElementById("dq-total-raw").textContent = formatNumber(totalRaw);
       document.getElementById("dq-total-clean").textContent = formatNumber(cleanTx);
@@ -323,6 +652,7 @@
       setDonut(cleanTx, issueTx);
       renderSeverityBars(data.issues_by_severity || data.by_severity || {}, totalRaw);
       renderRuleTable(data.issues_by_rule || data.by_rule || [], totalRaw);
+      updateIssuePct();
       overviewStatus.textContent = `Updated ${new Date(data.as_of).toLocaleString()}`;
     } catch (err) {
       overviewStatus.textContent = "Failed to load overview";
@@ -338,6 +668,7 @@
     });
     if (dqState.severity) params.set("severity", dqState.severity);
     if (dqState.ruleCode) params.set("rule_code", dqState.ruleCode);
+    if (dqState.column) params.set("column", dqState.column);
     if (dqState.transactionId) params.set("transaction_id", dqState.transactionId);
     return `/quality/issues?${params.toString()}`;
   }
@@ -460,36 +791,62 @@
     }
   }
 
+  function bindIssuesAnalytics() {
+    if (issuesClearFilters) {
+      issuesClearFilters.addEventListener("click", () => clearIssueFilters());
+    }
+    document.querySelectorAll("#issues-impact-table .table-sort").forEach((header) => {
+      header.addEventListener("click", () => {
+        const key = header.dataset.sort;
+        if (!key) return;
+        const current = issuesAnalyticsState.topIssuesSort;
+        issuesAnalyticsState.topIssuesSort = {
+          key,
+          dir: current.key === key && current.dir === "desc" ? "asc" : "desc",
+        };
+        renderTopIssuesTable(issuesAnalyticsState.data?.top_issues || []);
+      });
+    });
+  }
+
   function bindFilters() {
     document.getElementById("dq-apply-filters").addEventListener("click", () => {
       dqState.severity = document.getElementById("dq-severity-filter").value;
       dqState.ruleCode = document.getElementById("dq-rule-filter").value.trim();
+      dqState.column = document.getElementById("dq-column-filter").value.trim();
       dqState.transactionId = document.getElementById("dq-transaction-filter").value.trim();
       dqState.sortBy = document.getElementById("dq-sort-by").value;
       dqState.sortDir = document.getElementById("dq-sort-dir").value;
       dqState.pageSize = Number(document.getElementById("dq-page-size").value);
       loadIssues(1);
+      updateIssueFilterChips();
     });
 
     document.getElementById("dq-reset-filters").addEventListener("click", () => {
       document.getElementById("dq-severity-filter").value = "";
       document.getElementById("dq-rule-filter").value = "";
+      document.getElementById("dq-column-filter").value = "";
       document.getElementById("dq-transaction-filter").value = "";
       document.getElementById("dq-sort-by").value = "detected_at";
       document.getElementById("dq-sort-dir").value = "desc";
       document.getElementById("dq-page-size").value = "50";
       dqState.severity = "";
       dqState.ruleCode = "";
+      dqState.column = "";
       dqState.transactionId = "";
       dqState.sortBy = "detected_at";
       dqState.sortDir = "desc";
       dqState.pageSize = 50;
       loadIssues(1);
+      updateIssueFilterChips();
     });
   }
 
+  bindIssuesAnalytics();
   bindFilters();
+  updateIssueFilterChips();
   loadOverview();
+  loadIssuesAnalytics();
   loadIssues(1);
 </script>
 {% endblock %}
